@@ -1,0 +1,53 @@
+# --- Database Files ---
+*.db
+*.sql
+*.sqlite
+*.sqlite3
+
+# --- Environment Variables ---
+.env
+.env.*
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Byte-compiled / optimized / DLL files
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+venv/
+.env/
+.venv/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# --- VSCode and IDE settings ---
+.vscode/
+.idea/
+
+# --- MacOS ---
+.DS_Store
+
+# --- Logs ---
+*.log
+
+# --- Test and coverage files ---
+.coverage
+htmlcov/
+.cache/
+pytest_cache/
+
+# --- LangChain/Streaming Outputs ---
+*.jsonl
+*.tmp
+*.checkpoint
+
+customer-serice-example.md
