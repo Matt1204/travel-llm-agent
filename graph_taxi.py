@@ -24,18 +24,24 @@ from taxi_assistant_chain import (
 
 def taxi_entry_node(state: State, config: RunnableConfig):
     print("HITTTTTTT Taxi Assistant Entry Node")
-    taxi_entry_message = ToolMessage(
-        tool_call_id=state["messages"][-1].tool_calls[0]["id"],
-        content=(
-            "The assistant is now the 'taxi_assistant'. Reflect on the above conversation between the host assistant and the user.\n"
-            "The user's intent is unsatisfied. Use the provided tools to assist the user.\n"
-            "Remember: you are 'taxi_assistant'. The taxi request is not complete until you have successfully invoked the appropriate tool.\n"
-            "If the user changes their mind or needs help for other tasks, call the WorkerCompleteOrEscalate tool to let the primary host assistant take control.\n"
-            # "If you think you have completed the current task, MUST call the WorkerCompleteOrEscalate tool to complete the dialog.\n"
-            "Do not mention who you are, just act as the proxy for the assistant."
-        ),
+
+    tc_message_template = (
+        "The assistant is now the 'taxi_assistant'. Reflect on the above conversation between the host assistant and the user.\n"
+        "The user's intent is unsatisfied. Use the provided tools to assist the user.\n"
     )
-    return {"messages": [taxi_entry_message], "dialog_state": ["in_taxi_assistant"]}
+    taxi_entry_message = []
+    for tc in state["messages"][-1].tool_calls or []:
+        args = tc.get("args") or {}
+        request = args.get("request")
+        if request is not None:
+            content = tc_message_template + "Task: " + request
+            taxi_entry_message.append(
+                ToolMessage(tool_call_id=tc["id"], content=content)
+            )
+        else:
+            # maybe skip or log missing request
+            continue
+    return {"messages": taxi_entry_message, "dialog_state": ["in_taxi_assistant"]}
 
 
 def taxi_assistant_tool_handler(state: State, config: RunnableConfig) -> Command[
@@ -65,25 +71,25 @@ def taxi_assistant_tool_handler(state: State, config: RunnableConfig) -> Command
     # if the tool is sensitive, ask the user for approval
     if tool_name in taxi_assistant_sensitive_tools_names:
         print("!!!!! HIIIT taxi assistant sensitive tool")
-        approval = interrupt(
+        user_input = interrupt(
             {
                 "text_to_revise": "Do you want to proceed with the tool call: "
                 + tool_name
                 + "?"
             }
         )
-        if approval == True:
+        if user_input == True:
             print("!!!!! HIIIT sensitive tool approved")
             return Command(goto=TAXI_ASSISTANT_SENSITIVE_TOOLS)
         else:
             print("!!!!! sensitive tool DENIED, to TAXI_ENTRY_NODE")
             return Command(
-                goto=PRIMARY_ASSISTANT,
+                goto=TAXI_ASSISTANT,
                 update={
                     "messages": [
                         ToolMessage(
                             tool_call_id=state["messages"][-1].tool_calls[0]["id"],
-                            content=f"Tool call denied by user. Continue assisting, accounting for the user's input.",
+                            content=f"Tool call denied by user. reason: {user_input}. Continue assisting, accounting for the user's input.",
                         )
                     ]
                 },
@@ -94,7 +100,7 @@ def taxi_assistant_tool_handler(state: State, config: RunnableConfig) -> Command
     else:
         print("!!!!! flight assistant Unknown tool")
         return Command(
-            goto=TAXI_ASSISTANT_RETURN_NODE,
+            goto=TAXI_ASSISTANT,
             update={
                 "messages": [
                     ToolMessage(

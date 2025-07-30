@@ -5,7 +5,7 @@ from langgraph.graph.message import AnyMessage, add_messages
 # from langchain_anthropic import ChatAnthropic
 # from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_tavily import TavilySearch
-
+from langchain_community.llms import Tongyi
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -18,6 +18,7 @@ from tools_flight import (
 )
 from pydantic_tools import ToFlightAssistant, ToTaxiAssistant
 from langchain_openai import ChatOpenAI
+from langchain_community.chat_models import ChatTongyi
 
 def update_dialog_stack(prev_val: list[str], value: list[str]):
     if value == ["pop"]:
@@ -63,21 +64,23 @@ class Assistant:
 # llm = ChatGoogleGenerativeAI(
 #     model="gemini-2.5-flash-lite-preview-06-17", temperature=0.2
 # )
-llm = ChatOpenAI(model="gpt-4o-mini-2024-07-18", temperature=0.2)
+# llm = ChatOpenAI(model="gpt-4o-mini-2024-07-18", temperature=0.2)
+llm = ChatTongyi(model="qwen-plus", temperature=0.1)
+
 primary_assistant_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are a helpful customer support assistant for Swiss Airlines. "
-            "Your primary role is to search for flight information and company policies to answer customer queries. "
-            "If a customer requests to update or cancel a flight, book a car rental, book a hotel, or get trip recommendations, "
+            "You are a helpful customer support assistant for airlines. "
+            "Your primary role is to search for flight information to answer customer queries. "
+            "If a customer requests to update or cancel a flight and taxi, "
             "delegate the task to the appropriate specialized assistant by invoking the corresponding tool. You are not able to make these types of changes yourself."
             " Only the specialized assistants are given permission to do this for the user."
             "The user is not aware of the different specialized assistants, so do not mention them; just quietly delegate through function calls. "
             "Provide detailed information to the customer, and always double-check the database before concluding that information is unavailable. "
             " When searching, be persistent. Expand your query bounds if the first search returns no results. "
             " If a search comes up empty, expand your search before giving up."
-            "\n\nCurrent user flight information:\n\n{user_info}\n</Flights>"
+            "\n\nCurrent user booking information:\n\n{user_info}\n</Flights>"
             "\nCurrent time: {time}.",
         ),
         ("placeholder", "{messages}"),

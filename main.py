@@ -60,7 +60,7 @@ if __name__ == "__main__":
                 # Satisfy the tool invocation by
                 # providing instructions on the requested changes / change of mind
                 result = graph.invoke(
-                    Command(resume=False),
+                    Command(resume=user_input),
                     config,
                     stream_mode=["values"],
                 )

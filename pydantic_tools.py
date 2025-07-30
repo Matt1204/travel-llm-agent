@@ -14,13 +14,15 @@ class ToTaxiAssistant(BaseModel):
     """Transfers work to a specialized assistant to handle taxi related information."""
 
     request: str = Field(
-        description="Any necessary followup questions the taxi assistant should clarify before proceeding."
+        description=("Any necessary followup instructions the taxi assistant needs to accomplish the task."
+        "e.g. 'create a new taxi request at TIME, pick up at PICKUP_LOCATION, drop off at DROPOFF_LOCATION'")
     )
 
 
 class WorkerCompleteOrEscalate(BaseModel):
     """A tool to mark the current task as completed and/or to escalate control of the dialog to the primary assistant,
     who can re-route the dialog based on the user's needs.
+    You must call this tool when you have completed the current task.
     example 1: "cancel": True, "reason": "User changed their mind about the current task.",
     example 2: "cancel": True, "reason": "I have fully completed the task.",
     example 3: "cancel": False, "reason": "I need to search the user's emails or calendar for more information.",
