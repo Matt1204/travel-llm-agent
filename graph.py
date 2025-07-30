@@ -119,6 +119,7 @@ builder.add_conditional_edges(
 )
 builder.add_node(PRIMARY_ASSISTANT_TOOLS_NODE, ToolNode(primary_assistant_tools))
 
+builder.add_edge(PRIMARY_ASSISTANT_TOOLS_NODE, PRIMARY_ASSISTANT)
 
 
 # The checkpointer lets the graph persist its state

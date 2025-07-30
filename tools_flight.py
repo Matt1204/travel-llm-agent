@@ -29,7 +29,7 @@ def test_db_connection():
         print(f"Database connection or query failed: {e}")
 
 
-test_db_connection()
+# test_db_connection()
 
 
 @tool
