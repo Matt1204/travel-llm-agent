@@ -4,7 +4,7 @@ from primary_assistant_chain import Assistant
 from langchain_core.messages import ToolMessage
 from pydantic_tools import WorkerCompleteOrEscalate
 from langgraph.prebuilt import tools_condition, ToolNode
-
+from typing import Literal
 from pydantic_tools import WorkerCompleteOrEscalate
 from graph_setup import PRIMARY_ASSISTANT
 from flight_assistant_chain import (
@@ -14,23 +14,45 @@ from flight_assistant_chain import (
     flight_assistant_sensitive_tools_names,
     flight_assistant_safe_tools_names,
 )
+from graph_setup import (
+    FLIGHT_ENTRY_NODE,
+    FLIGHT_ASSISTANT,
+    FLIGHT_ASSISTANT_TOOL_HANDLER,
+    FLIGHT_ASSISTANT_RETURN_NODE,
+    FLIGHT_ASSISTANT_SENSITIVE_TOOLS,
+    FLIGHT_ASSISTANT_SAFE_TOOLS,
+)
 
 
 def flight_entry_node(state: State, config: RunnableConfig):
     print("HITTTTTTT Flight Assistant Entry Node")
-    flight_entry_message = ToolMessage(
-        tool_call_id=state["messages"][-1].tool_calls[0]["id"],
-        content=f"""The assistant is now the {"flight_assistant"}. Reflect on the above conversation between the host assistant and the user.
-        The user's intent is unsatisfied. Use the provided tools to assist the user. Remember, you are {"flight_assistant"},
-        and the booking, update, other other action is not complete until after you have successfully invoked the appropriate tool.
-        If the user changes their mind or needs help for other tasks, call the WorkerCompleteOrEscalate tool to let the primary host assistant take control.
-        Do not mention who you are - just act as the proxy for the assistant.""",
+
+    tc_message_template = (
+        "The assistant is now the 'flight_assistant'. Reflect on the above conversation between the host assistant and the user.\n"
+        "The user's intent is unsatisfied. Use the provided tools to assist the user.\n"
     )
-    return {"messages": [flight_entry_message], "dialog_state": ["in_flight_assistant"]}
+    flight_entry_message = []
+    for tc in state["messages"][-1].tool_calls or []:
+        args = tc.get("args") or {}
+        request = args.get("request")
+        if request is not None:
+            content = tc_message_template + "Task: " + request
+            flight_entry_message.append(
+                ToolMessage(tool_call_id=tc["id"], content=content)
+            )
+        else:
+            # maybe skip or log missing request
+            continue
+    return {"messages": flight_entry_message, "dialog_state": ["in_flight_assistant"]}
 
 
-
-def flight_assistant_tool_handler(state: State, config: RunnableConfig):
+def flight_assistant_tool_handler(state: State, config: RunnableConfig) -> Command[
+    Literal[
+        FLIGHT_ASSISTANT_SENSITIVE_TOOLS,
+        FLIGHT_ASSISTANT_SAFE_TOOLS,
+        FLIGHT_ASSISTANT_RETURN_NODE,
+    ]
+]:
     route = tools_condition(state)
 
     # if the flight assistant no tool call, end graph execution
@@ -44,7 +66,7 @@ def flight_assistant_tool_handler(state: State, config: RunnableConfig):
     # if the tool is WorkerCompleteOrEscalate, return to the primary assistant
     if WorkerCompleteOrEscalate.__name__ in tool_name_list:
         print("!!!!!!!!!! Flight assistant escalate back to primary")
-        return Command(goto="flight_assistant_return_node")
+        return Command(goto=FLIGHT_ASSISTANT_RETURN_NODE)
 
     tool_name = tool_name_list[0]
     # if the tool is sensitive, ask the user for approval
@@ -58,28 +80,28 @@ def flight_assistant_tool_handler(state: State, config: RunnableConfig):
             }
         )
         if approval == True:
-            print("!!!!! HIIIT sensitive tool approved")
-            return Command(goto="flight_assistant_sensitive_tools")
+            print("!!!!! HIIIT flight sensitive tool approved")
+            return Command(goto=FLIGHT_ASSISTANT_SENSITIVE_TOOLS)
         else:
-            print("!!!!! sensitive tool DENIED")
+            print("!!!!! flight assistant sensitive tool DENIED, back to FLIGHT_ASSISTANT")
             return Command(
-                goto="flight_entry_node",
+                goto=FLIGHT_ASSISTANT,
                 update={
                     "messages": [
                         ToolMessage(
                             tool_call_id=state["messages"][-1].tool_calls[0]["id"],
-                            content=f"Tool call denied by user. Continue assisting, accounting for the user's input.",
+                            content=f"Tool call denied by user. reason: {approval}. Continue assisting, accounting for the user's input.",
                         )
                     ]
                 },
             )
     elif tool_name in flight_assistant_safe_tools_names:
         print("!!!!! HIIIT flight assistant safe tool")
-        return Command(goto="flight_assistant_safe_tools")
+        return Command(goto=FLIGHT_ASSISTANT_SAFE_TOOLS)
     else:
         print("!!!!! flight assistant Unknown tool")
         return Command(
-            goto="flight_assistant_return_node",
+            goto=FLIGHT_ASSISTANT,
             update={
                 "messages": [
                     ToolMessage(
@@ -104,28 +126,27 @@ def flight_assistant_return_node(state: State, config: RunnableConfig):
         )
     return {
         "messages": messages,
-        "dialog_statexw": ["pop"],
+        "dialog_state": ["pop"],
     }
 
 
 
 
 def register_flight_graph(builder: StateGraph):
-    builder.add_node("flight_entry_node", flight_entry_node)
-
-    builder.add_edge("flight_entry_node", "flight_assistant")
-    builder.add_node("flight_assistant", Assistant(flight_assistant_chain))
+    builder.add_node(FLIGHT_ENTRY_NODE, flight_entry_node)
+    builder.add_node(FLIGHT_ASSISTANT, Assistant(flight_assistant_chain))
+    builder.add_edge(FLIGHT_ENTRY_NODE, FLIGHT_ASSISTANT)
 
     # "flight assistant node" alwats steps into "flight_assistant_tool_handler"
-    builder.add_node("flight_assistant_tool_handler", flight_assistant_tool_handler)
-    builder.add_edge("flight_assistant", "flight_assistant_tool_handler")
+    builder.add_node(FLIGHT_ASSISTANT_TOOL_HANDLER, flight_assistant_tool_handler)
+    builder.add_edge(FLIGHT_ASSISTANT, FLIGHT_ASSISTANT_TOOL_HANDLER)
 
     builder.add_node(
-        "flight_assistant_sensitive_tools", ToolNode(flight_assistant_sensitive_tools)
+        FLIGHT_ASSISTANT_SENSITIVE_TOOLS, ToolNode(flight_assistant_sensitive_tools)
     )
-    builder.add_node("flight_assistant_safe_tools", ToolNode(flight_assistant_safe_tools))
-    builder.add_edge("flight_assistant_safe_tools", "flight_assistant")
-    builder.add_edge("flight_assistant_sensitive_tools", "flight_assistant")
+    builder.add_node(FLIGHT_ASSISTANT_SAFE_TOOLS, ToolNode(flight_assistant_safe_tools))
+    builder.add_edge(FLIGHT_ASSISTANT_SAFE_TOOLS, FLIGHT_ASSISTANT)
+    builder.add_edge(FLIGHT_ASSISTANT_SENSITIVE_TOOLS, FLIGHT_ASSISTANT)
 
-    builder.add_node("flight_assistant_return_node", flight_assistant_return_node)
-    builder.add_edge("flight_assistant_return_node", PRIMARY_ASSISTANT)
+    builder.add_node(FLIGHT_ASSISTANT_RETURN_NODE, flight_assistant_return_node)
+    builder.add_edge(FLIGHT_ASSISTANT_RETURN_NODE, PRIMARY_ASSISTANT)

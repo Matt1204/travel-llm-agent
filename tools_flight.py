@@ -129,7 +129,8 @@ def search_flights(
 
     cursor.close()
     conn.close()
-
+    if len(results) == 0:
+        return "No flights found."
     return results
 
 

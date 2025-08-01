@@ -46,7 +46,6 @@ def taxi_entry_node(state: State, config: RunnableConfig):
 
 def taxi_assistant_tool_handler(state: State, config: RunnableConfig) -> Command[
     Literal[
-        TAXI_ENTRY_NODE,
         TAXI_ASSISTANT_SENSITIVE_TOOLS,
         TAXI_ASSISTANT_SAFE_TOOLS,
         TAXI_ASSISTANT_RETURN_NODE,
@@ -82,7 +81,7 @@ def taxi_assistant_tool_handler(state: State, config: RunnableConfig) -> Command
             print("!!!!! HIIIT sensitive tool approved")
             return Command(goto=TAXI_ASSISTANT_SENSITIVE_TOOLS)
         else:
-            print("!!!!! sensitive tool DENIED, to TAXI_ENTRY_NODE")
+            print("!!!!! sensitive tool DENIED, to TAXI_ASSISTANT")
             return Command(
                 goto=TAXI_ASSISTANT,
                 update={

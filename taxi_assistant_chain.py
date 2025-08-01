@@ -17,7 +17,7 @@ from langchain_community.chat_models import ChatTongyi
 #     model="gemini-2.5-flash-lite-preview-06-17", temperature=0.2
 # )
 # llm = ChatOpenAI(model="gpt-4.1-2025-04-14", temperature=0.1)
-llm = ChatTongyi(model="qwen-plus", temperature=0.1)
+llm = ChatTongyi(model="qwen-max", temperature=0.1)
 
 taxi_assistant_prompt = ChatPromptTemplate.from_messages(
     [

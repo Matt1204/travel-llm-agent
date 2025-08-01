@@ -65,7 +65,7 @@ class Assistant:
 #     model="gemini-2.5-flash-lite-preview-06-17", temperature=0.2
 # )
 # llm = ChatOpenAI(model="gpt-4o-mini-2024-07-18", temperature=0.2)
-llm = ChatTongyi(model="qwen-plus", temperature=0.1)
+llm = ChatTongyi(model="qwen-max", temperature=0.1)
 
 primary_assistant_prompt = ChatPromptTemplate.from_messages(
     [
