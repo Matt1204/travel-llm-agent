@@ -101,7 +101,14 @@ def decision_after_primary_thought(state: State, config: RunnableConfig):
             return TAXI_ENTRY_NODE
         else:
             print("Primary Assistant ends: Unknown tool name......")
-            return END
+            return Command(
+                goto=PRIMARY_ASSISTANT,
+                update={
+                    "messages": [
+                        ToolMessage(content="Tool call failed, tool name not found, do NOT make up tools or parameters! Continue assisting, accounting for the user's input.")
+                    ]
+                },
+            )
     else:
         print("Primary Assistant END")
         return END
