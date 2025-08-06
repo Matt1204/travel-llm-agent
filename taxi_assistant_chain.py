@@ -9,7 +9,7 @@ from tools_taxi import (
 )
 from langchain_community.llms import Tongyi
 
-from pydantic_tools import WorkerCompleteOrEscalate
+from primary_assistant_tools import WorkerCompleteOrEscalate
 from langchain_openai import ChatOpenAI
 from langchain_community.chat_models import ChatTongyi
 

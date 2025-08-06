@@ -2,7 +2,9 @@ from typing import Dict, Any, List, Union, Optional
 from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 import json
-
+from db_connection import db_file
+import sqlite3
+import uuid
 
 class PriorityRequirement(BaseModel):
     """Base class for priority-based requirements with dynamic priority levels."""
@@ -75,23 +77,14 @@ PriorityRequirement.model_config = {"extra": "allow"}
 
 class AirportRequirements(PriorityRequirement):
     """Airport requirement with priority levels."""
-    
+
     @field_validator("*", mode="before")
-    def ensure_list_of_strings(cls, v):
-        """Ensure all priority values are lists of strings."""
-        if v is None:
-            return []
-        
-        # If it's already a list, ensure all items are strings
-        if isinstance(v, list):
-            return [str(item) for item in v]
-        
-        # If it's a single string, convert to list
+    def ensure_string(cls, v):
+        """Ensure all priority values are strings."""
         if isinstance(v, str):
-            return [v]
-        
-        # For any other type, convert to string and wrap in list
-        return [str(v)]
+            return v
+        else:
+            raise ValueError("Airport requirement must be a string")
 
 
 class TimeRequirement(PriorityRequirement):
@@ -120,17 +113,16 @@ class BudgetRequirement(PriorityRequirement):
     def ensure_list_of_ints(cls, v):
         if v is None:
             return []
-        
+
         if isinstance(v, list):
             return [int(item) for item in v]
-        
 
     @field_validator("*", mode="before")
     def validate_positive_budget(cls, v):
         if isinstance(v, (int, float)) and v <= 0:
             raise ValueError("Budget must be positive")
         return v
-    
+
     @field_validator("*", mode="before")
     def validate_budget_boundaries(cls, v):
         if isinstance(v, list) and len(v) == 2:
@@ -154,13 +146,13 @@ class FlightRequirements(BaseModel):
         # If no data provided, create empty objects with default priority_1 levels
         if not data:
             data = {
-                "departure_airport": {"priority_1": []},
-                "arrival_airport": {"priority_1": []},
+                "departure_airport": {"priority_1": None},
+                "arrival_airport": {"priority_1": None},
                 "departure_time": {"priority_1": None},
                 # "return_time": {"priority_1": None},
-                "budget": {"priority_1": None}
+                "budget": {"priority_1": None},
             }
-        
+
         # Convert nested dicts to appropriate requirement objects
         processed_data = {}
 
@@ -201,6 +193,10 @@ class FlightRequirements(BaseModel):
             setattr(self, requirement_type, requirement)
 
         requirement.add_priority(level, value)
+
+    def get_requirement_obj(self, requirement_type: str) -> Any:
+        """Get a specific requirement object."""
+        return getattr(self, requirement_type, None)
 
     def remove_requirement_priority(self, requirement_type: str, level: int) -> None:
         """Remove a priority level from a specific requirement type."""
@@ -255,18 +251,24 @@ def create_sample_requirements() -> FlightRequirements:
     sample_data = {
         "departure_airport": {
             "priority_1": "JFK",
-            "priority_2": ["JFK", "LGA"],
-            "priority_3": ["JFK", "LGA", "EWR"],
-            "priority_4": ["JFK", "LGA", "EWR", "HPN"],
+            "priority_2": "LGA",
+            "priority_3": "EWR",
+            "priority_4": "HPN",
         },
         "arrival_airport": {
             "priority_1": "LAX",
-            "priority_2": ["LAX", "BUR"],
-            "priority_3": ["LAX", "BUR", "SNA"],
+            "priority_2": "BUR",
+            "priority_3": "SNA",
         },
         "departure_time": {
-            "priority_1": [datetime(2025, 8, 1, 0, 0), datetime(2025, 8, 2, 23, 59, 59)],
-            "priority_2": [datetime(2025, 8, 1, 0, 0), datetime(2025, 8, 7, 23, 59, 59)],
+            "priority_1": [
+                datetime(2025, 8, 1, 0, 0),
+                datetime(2025, 8, 2, 23, 59, 59),
+            ],
+            "priority_2": [
+                datetime(2025, 8, 1, 0, 0),
+                datetime(2025, 8, 7, 23, 59, 59),
+            ],
         },
         "budget": {
             "priority_1": [1000, 1200],
@@ -279,11 +281,61 @@ def create_sample_requirements() -> FlightRequirements:
     return FlightRequirements(**sample_data)
 
 
+
+def save_flight_requirements_to_db(
+    requirements: FlightRequirements, passenger_id: str
+) -> None:
+    """Save flight requirements to the database."""
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    id = str(uuid.uuid4())
+
+    arrival_airport_json = json.dumps(requirements.get_requirement_obj("arrival_airport").get_all_priorities())
+
+    departure_airport_json = json.dumps(requirements.get_requirement_obj("departure_airport").get_all_priorities())
+
+    budget_json = json.dumps(requirements.get_requirement_obj("budget").get_all_priorities())
+
+    departure_time = requirements.get_requirement_obj("departure_time").get_all_priorities()
+    departure_time_json = json.dumps([[dt.isoformat() for dt in value] for value in departure_time.values()])
+
+    cursor.execute(
+        "INSERT INTO flight_requirements (requirement_id, passenger_id, departure_airport, arrival_airport, departure_time, budget) VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            id,
+            passenger_id,
+            departure_airport_json,
+            arrival_airport_json,
+            departure_time_json,
+            budget_json,
+        ),
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+def fetch_requirements_from_db(requirement_id: str) -> None:
+    """Fetch the flight requirements from the database."""
+    conn = sqlite3.connect(db_file)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM flight_requirements WHERE requirement_id = ?", (requirement_id,))
+    result = cursor.fetchone()
+    passenger_id = result[1]
+    departure_airport = json.loads(result[2])
+    arrival_airport = json.loads(result[3])
+    departure_time = json.loads(result[4])
+    budget = json.loads(result[5])
+    print(passenger_id)
+    print(departure_airport)
+    print(arrival_airport)
+
 # Example usage
 if __name__ == "__main__":
     # Create empty requirements (will have default priority_1 levels)
     reqs = create_sample_requirements()
-    
+    # save_flight_requirements_to_db(reqs, "1234567890")
+    fetch_requirements_from_db("186e7310-08d8-4d3b-984a-2e4d13910121")
+
     print("=== Empty FlightRequirements ===")
     print(reqs.to_json())
 
@@ -291,10 +343,12 @@ if __name__ == "__main__":
     reqs.add_requirement_priority("departure_airport", 1, ["LAX"])
     print(reqs.to_json())
 
+    print("\n=== Getting priority level ===")
+    print(reqs.get_requirement_priority("departure_airport", 1))
+
     print("\n=== Updating existing priority ===")
     reqs.update_requirement_priority("departure_airport", 1, ["LAX", "JFK"])
     print(reqs.to_json())
-
 
     print("\n=== Getting sorted priorities for budget ===")
     budget_priorities = reqs.budget.get_sorted_priorities()

@@ -2,10 +2,9 @@
 from graph import State, RunnableConfig, END, Command, ToolNode, interrupt, StateGraph
 from primary_assistant_chain import Assistant
 from langchain_core.messages import ToolMessage
-from pydantic_tools import WorkerCompleteOrEscalate
+from primary_assistant_tools import WorkerCompleteOrEscalate
 from langgraph.prebuilt import tools_condition, ToolNode
 from typing import Literal
-from pydantic_tools import WorkerCompleteOrEscalate
 from graph_setup import PRIMARY_ASSISTANT
 from flight_assistant_chain import (
     flight_assistant_chain,
