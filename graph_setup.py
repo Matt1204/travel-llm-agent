@@ -15,3 +15,5 @@ TAXI_ASSISTANT_TOOL_HANDLER = "taxi_assistant_tool_handler"
 TAXI_ASSISTANT_RETURN_NODE = "taxi_assistant_return_node"
 TAXI_ASSISTANT_SENSITIVE_TOOLS = "taxi_assistant_sensitive_tools"
 TAXI_ASSISTANT_SAFE_TOOLS = "taxi_assistant_safe_tools"
+
+INTENT_GRAPH = "intent_graph"

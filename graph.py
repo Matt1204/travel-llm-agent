@@ -17,8 +17,8 @@ from langgraph.types import interrupt, Command
 # from langgraph.graph import GraphRunInterrupted
 from langchain_core.messages import ToolMessage
 
-from pydantic_tools import ToFlightAssistant, ToTaxiAssistant
-
+from primary_assistant_tools import ToFlightAssistant, ToTaxiAssistant
+from intent import intent_graph
 from graph_flight import register_flight_graph
 from graph_taxi import register_taxi_graph
 from tools_taxi import fetch_user_taxi_requests
@@ -28,6 +28,7 @@ from graph_setup import (
     PRIMARY_ASSISTANT_TOOLS_NODE,
     TAXI_ENTRY_NODE,
     TAXI_ASSISTANT,
+    INTENT_GRAPH,
 )
 
 builder = StateGraph(State)
@@ -45,7 +46,8 @@ def fetch_user_info_node(state: State, config: RunnableConfig):
         "taxi_info": user_taxi_info,
     }
     formatted_user_info = json.dumps(user_info, indent=2)
-    return {"user_info": formatted_user_info}  # user_info is a string
+    # return {"user_info": formatted_user_info}  # user_info is a string
+    return {"user_flight_info": user_flight_info, "user_taxi_info": user_taxi_info}
 
 
 
@@ -60,11 +62,14 @@ def decision_after_fetch_user_info(state: State, config: RunnableConfig):
     dialog_state = dialog_state_list[-1]
 
     if dialog_state == "in_flight_assistant":
-        print("shortcut to Flight Assistant")
+        print("--- shortcut to Flight Assistant ---")
         return "flight_assistant"
     elif dialog_state == "in_taxi_assistant":
-        print("shortcut to Taxi Assistant")
+        print("--- shortcut to Taxi Assistant ---")
         return TAXI_ASSISTANT
+    elif dialog_state == "in_intent_elicitation_assistant":
+        print("--- shortcut to Intent Elicitation Assistant ---")
+        return INTENT_GRAPH
     else:
         return PRIMARY_ASSISTANT
 
@@ -74,6 +79,7 @@ builder.add_conditional_edges(
     {
         PRIMARY_ASSISTANT: PRIMARY_ASSISTANT,
         TAXI_ASSISTANT: TAXI_ASSISTANT,
+        INTENT_GRAPH: INTENT_GRAPH,
         "flight_assistant": "flight_assistant",
     },
 )
@@ -128,6 +134,8 @@ builder.add_node(PRIMARY_ASSISTANT_TOOLS_NODE, ToolNode(primary_assistant_tools)
 
 builder.add_edge(PRIMARY_ASSISTANT_TOOLS_NODE, PRIMARY_ASSISTANT)
 
+builder.add_node(INTENT_GRAPH, intent_graph)
+builder.add_edge(INTENT_GRAPH, END)
 
 # The checkpointer lets the graph persist its state
 # this is a complete memory for the entire graph.

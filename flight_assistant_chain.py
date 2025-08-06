@@ -9,7 +9,7 @@ from tools_flight import (
     cancel_ticket,
 )
 
-from pydantic_tools import WorkerCompleteOrEscalate
+from primary_assistant_tools import WorkerCompleteOrEscalate
 from langchain_openai import ChatOpenAI
 
 # llm = ChatGoogleGenerativeAI(

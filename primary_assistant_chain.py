@@ -1,5 +1,5 @@
 from typing import Annotated, Literal, Optional
-from typing_extensions import TypedDict
+from typing_extensions import TypedDict, NotRequired
 from langgraph.graph.message import AnyMessage, add_messages
 
 # from langchain_anthropic import ChatAnthropic
@@ -16,9 +16,14 @@ from tools_flight import (
     update_ticket_to_new_flight,
     cancel_ticket,
 )
-from pydantic_tools import ToFlightAssistant, ToTaxiAssistant
+from primary_assistant_tools import ToFlightAssistant, ToTaxiAssistant, fetch_user_flight_search_requirement, handoff_to_flight_intent_elicitation_tool
 from langchain_openai import ChatOpenAI
 from langchain_community.chat_models import ChatTongyi
+from graph_setup import INTENT_GRAPH
+from langgraph.types import Command
+from langchain_core.tools import tool, InjectedToolCallId
+from langchain_core.messages import ToolMessage
+
 
 def update_dialog_stack(prev_val: list[str], value: list[str]):
     if value == ["pop"]:
@@ -28,9 +33,10 @@ def update_dialog_stack(prev_val: list[str], value: list[str]):
 
 class State(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
-    user_info: str
+    user_flight_info: NotRequired[str]
+    user_taxi_info: NotRequired[str]
     dialog_state: Annotated[
-        Literal["in_primary_assistant", "in_flight_assistant", "in_taxi_assistant"],
+        Literal["in_primary_assistant", "in_flight_assistant", "in_taxi_assistant", "in_intent_elicitation_assistant"],
         update_dialog_stack,
     ]
 
@@ -43,7 +49,7 @@ class Assistant:
     def __call__(self, state: State, config: RunnableConfig):
         while True:
             # feeding State to chain, State has "messages" and "user_info", which will be appended to system prompt
-            
+
             result = self.runnable.invoke(state)
             # If the LLM happens to return an empty response, we will re-prompt it for an actual response.
             if not result.tool_calls and (
@@ -71,26 +77,35 @@ primary_assistant_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are a helpful customer support assistant for airlines. "
-            "Your primary role is to search for flight information to answer customer queries. "
-            "If a customer requests to update or cancel a flight and taxi, "
-            "delegate the task to the appropriate specialized assistant by invoking the corresponding tool. You are not able to make these types of changes yourself."
-            " Only the specialized assistants are given permission to do this for the user."
+            "You are a helpful customer support assistant to help user maage their trips. "
+            "Your primary role is to search for flight search requirements/flight information to answer customer queries."
+            "If a customer requests to create/update/cancel a flight, flight search requirement, or taxi, delegate the task to the appropriate specialized assistant by invoking the corresponding tool. You are not able to make these types of changes yourself."
+            "Only the specialized assistants are given permission to do this for the user."
             "The user is not aware of the different specialized assistants, so do not mention them; just quietly delegate through function calls. "
+            "If the user requests to search for their flights, you can use the fetch_user_flight_search_requirement tool to fetch the user's flight search requirements from the database. "
+            "If user requests to search for their flight search requirements(which is a set of criteria user specifies to search for flights), you can use the fetch_user_flight_search_requirement tool"
             "Provide detailed information to the customer, and always double-check the database before concluding that information is unavailable. "
-            " When searching, be persistent. Expand your query bounds if the first search returns no results. "
+            # " When searching, be persistent. Expand your query bounds if the first search returns no results. "
             " If a search comes up empty, expand your search before giving up."
-            "\n\nCurrent user booking information:\n\n{user_info}\n</Flights>"
+            "\n\nCurrent user flight information:\n\n<Flights>{user_flight_info}\n</Flights>"
+            "\n\nCurrent user taxi information:\n\n<Taxi>{user_taxi_info}\n</Taxi>"
             "\nCurrent time: {time}.",
         ),
         ("placeholder", "{messages}"),
     ]
 ).partial(time=datetime.now)
 
+# transfer_to_intent_graph_tool = create_handoff_to_worker_tool(
+#     INTENT_GRAPH,
+#     "Hand off to intent elicitation assistant to help user elicit their requirements on flight tickets"
+#     "task_description: describe the task the intent elicitation assistant should do"
+# )
+
+
 
 tavily_tool = TavilySearch(max_results=1)
 # primary_assistant_tools = [tavily_tool]
-primary_assistant_tools = [fetch_user_flight_information]
+primary_assistant_tools = [fetch_user_flight_information, fetch_user_flight_search_requirement, handoff_to_flight_intent_elicitation_tool]
 worker_assistant_tools = [ToFlightAssistant, ToTaxiAssistant]
 
 primary_assistant_chain = primary_assistant_prompt | llm.bind_tools(

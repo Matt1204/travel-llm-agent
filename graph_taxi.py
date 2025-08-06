@@ -4,7 +4,7 @@ from typing import Literal
 from langchain_core.messages import ToolMessage
 from taxi_assistant_chain import taxi_assistant_chain
 from langgraph.prebuilt import tools_condition, ToolNode
-from pydantic_tools import WorkerCompleteOrEscalate
+from primary_assistant_tools import WorkerCompleteOrEscalate
 from graph_setup import (
     TAXI_ASSISTANT_SENSITIVE_TOOLS,
     TAXI_ASSISTANT_SAFE_TOOLS,
