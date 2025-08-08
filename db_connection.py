@@ -3,6 +3,7 @@ from datetime import datetime
 import uuid
 import pandas as pd
 
+
 # Connect to local SQLite database file (same directory)
 # db_file = "llm-agent-db.db"
 # Convert the flights to present time for our tutorial
@@ -43,14 +44,17 @@ def update_dates(file):
         df.to_sql(table_name, conn, if_exists="replace", index=False)
     del df
     del tdf
+    print(
+        f"Updated flights and bookings dates by shifting {time_diff.days} days and {time_diff.seconds//3600} hours."
+    )
     conn.commit()
     conn.close()
 
     return file
 
 
-# db_file = update_dates("llm-agent-db.db")
-db_file = "llm-agent-db.db"
+db_file = update_dates("llm-agent-db.db")
+# db_file = "llm-agent-db.db"
 # db_file = "llm-agent-db.db"
 # conn = sqlite3.connect(db)
 # cursor = conn.cursor()

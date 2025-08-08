@@ -18,9 +18,11 @@ from langgraph.types import interrupt, Command
 from langchain_core.messages import ToolMessage
 
 from primary_assistant_tools import ToFlightAssistant, ToTaxiAssistant
-from intent import intent_graph
+
+# from intent import intent_graph
 from graph_flight import register_flight_graph
 from graph_taxi import register_taxi_graph
+from intent import register_intent_graph
 from tools_taxi import fetch_user_taxi_requests
 from graph_setup import (
     FETCH_USER_INFO_NODE,
@@ -28,8 +30,9 @@ from graph_setup import (
     PRIMARY_ASSISTANT_TOOLS_NODE,
     TAXI_ENTRY_NODE,
     TAXI_ASSISTANT,
-    INTENT_GRAPH,
+    INTENT_ENTRY_NODE,
 )
+from primary_assistant_tools import fetch_user_flight_search_requirement
 
 builder = StateGraph(State)
 
@@ -41,19 +44,26 @@ def fetch_user_info_node(state: State, config: RunnableConfig):
         raise ValueError("No passenger ID configured, cannot fetch user info.")
     user_flight_info = fetch_user_flight_information.invoke({})
     user_taxi_info = fetch_user_taxi_requests.invoke({})
-    user_info = {
-        "flight_info": user_flight_info,
-        "taxi_info": user_taxi_info,
-    }
-    formatted_user_info = json.dumps(user_info, indent=2)
+    user_intent_info = fetch_user_flight_search_requirement.invoke({})
+    # user_info = {
+    #     "flight_info": user_flight_info,
+    #     "taxi_info": user_taxi_info,
+    #     "intent_info": user_intent_info,
+    # }
+    # formatted_user_info = json.dumps(user_info, indent=2)
     # return {"user_info": formatted_user_info}  # user_info is a string
-    return {"user_flight_info": user_flight_info, "user_taxi_info": user_taxi_info}
-
+    return {
+        "user_flight_info": json.dumps(user_flight_info, indent=2),
+        "user_taxi_info": json.dumps(user_taxi_info, indent=2),
+        "user_intent_info": json.dumps(user_intent_info, indent=2),
+    }
 
 
 # ------ "sub-graph" for primary assistant ------
 builder.add_node(FETCH_USER_INFO_NODE, fetch_user_info_node)
 builder.add_edge(START, FETCH_USER_INFO_NODE)
+
+
 def decision_after_fetch_user_info(state: State, config: RunnableConfig):
     dialog_state_list = state.get("dialog_state")
     if not dialog_state_list:
@@ -69,9 +79,10 @@ def decision_after_fetch_user_info(state: State, config: RunnableConfig):
         return TAXI_ASSISTANT
     elif dialog_state == "in_intent_elicitation_assistant":
         print("--- shortcut to Intent Elicitation Assistant ---")
-        return INTENT_GRAPH
+        return INTENT_ENTRY_NODE
     else:
         return PRIMARY_ASSISTANT
+
 
 builder.add_conditional_edges(
     FETCH_USER_INFO_NODE,
@@ -79,7 +90,7 @@ builder.add_conditional_edges(
     {
         PRIMARY_ASSISTANT: PRIMARY_ASSISTANT,
         TAXI_ASSISTANT: TAXI_ASSISTANT,
-        INTENT_GRAPH: INTENT_GRAPH,
+        INTENT_ENTRY_NODE: INTENT_ENTRY_NODE,
         "flight_assistant": "flight_assistant",
     },
 )
@@ -111,7 +122,9 @@ def decision_after_primary_thought(state: State, config: RunnableConfig):
                 goto=PRIMARY_ASSISTANT,
                 update={
                     "messages": [
-                        ToolMessage(content="Tool call failed, tool name not found, do NOT make up tools or parameters! Continue assisting, accounting for the user's input.")
+                        ToolMessage(
+                            content="Tool call failed, tool name not found, do NOT make up tools or parameters! Continue assisting, accounting for the user's input."
+                        )
                     ]
                 },
             )
@@ -134,13 +147,14 @@ builder.add_node(PRIMARY_ASSISTANT_TOOLS_NODE, ToolNode(primary_assistant_tools)
 
 builder.add_edge(PRIMARY_ASSISTANT_TOOLS_NODE, PRIMARY_ASSISTANT)
 
-builder.add_node(INTENT_GRAPH, intent_graph)
-builder.add_edge(INTENT_GRAPH, END)
+# builder.add_node(INTENT_GRAPH, intent_graph)
+# builder.add_edge(INTENT_GRAPH, END)
 
 # The checkpointer lets the graph persist its state
 # this is a complete memory for the entire graph.
 register_flight_graph(builder)
 register_taxi_graph(builder)
+register_intent_graph(builder)
 
 checkpointer = MemorySaver()
 graph = builder.compile(checkpointer=checkpointer)

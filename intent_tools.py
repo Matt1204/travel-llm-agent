@@ -13,20 +13,51 @@ from typing import Optional
 import sqlite3
 import uuid
 import json
-
-
+from langgraph.graph.message import AnyMessage, add_messages
+from graph_setup import PRIMARY_ASSISTANT
+from primary_assistant_chain import State
 # add this helper near the imports
-def _replace_req(old, new):
-    return new
 
 
-class IntentElicitationState(AgentState):
-    """Graph state = standard AgentState + custom FlightRequirements."""
+# def _replace_req(old, new):
+#     return new
+# class IntentElicitationState(AgentState):
+#     """Graph state = standard AgentState + custom FlightRequirements."""
 
-    # flight_requirements: NotRequired["FlightRequirements"] = None
-    flight_requirements: Annotated[Optional["FlightRequirements"], _replace_req] = None
-    requirement_id: NotRequired[str] = ""
+#     flight_requirements: Annotated[Optional["FlightRequirements"], _replace_req] = None
+#     requirement_id: NotRequired[str] = ""
+#     test_counter: NotRequired[int] = 0
 
+def IntentElicitCompleteOrEscalate(
+    cancel: bool,
+    reason: str,
+    *,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    state: Annotated[State, InjectedState],
+    config: RunnableConfig,
+) -> Command:
+    """A tool to mark the current task as completed and/or to escalate control of the dialog to the primary assistant,
+    who can re-route the dialog based on the user's needs.
+    You must call this tool when you have completed the current task.
+    example 1: "cancel": True, "reason": "User changed their mind about the current task.",
+    example 2: "cancel": True, "reason": "I have fully completed the task: <task_description>",
+    example 3: "cancel": False, "reason": "I need to search the user's emails or calendar for more information.",
+    """
+    print("HIIITTTT IntentElicitCompleteOrEscalate called. intent agent => primary assistant")
+    return Command(
+        goto=PRIMARY_ASSISTANT,
+        update={
+            "requirement_id": "",
+            "flight_requirements": None,
+            "messages": [
+                ToolMessage(
+                    tool_call_id=tool_call_id,
+                    content=f"Intent Elicitation Agent hand off to primary assistant. Reason: {reason}",
+                )
+            ],
+            "dialog_state": ["pop"],
+        }
+    )
 
 @tool
 def add_departure_airport_priority(
@@ -34,7 +65,7 @@ def add_departure_airport_priority(
     value: str,
     *,
     tool_call_id: Annotated[str, InjectedToolCallId],
-    state: Annotated[IntentElicitationState, InjectedState],
+    state: Annotated[State, InjectedState],
     config: RunnableConfig,
 ) -> Command:
     """Add an departure airport with priority level to the FlightRequirements object. Note: change not applied to database.
@@ -62,7 +93,7 @@ def add_arrival_airport_priority(
     value: str,
     *,
     tool_call_id: Annotated[str, InjectedToolCallId],
-    state: Annotated[IntentElicitationState, InjectedState],
+    state: Annotated[State, InjectedState],
     config: RunnableConfig,
 ) -> Command:
     """Add an arrival airport with priority level to the FlightRequirements object. Note: change not applied to database.
@@ -90,7 +121,7 @@ def add_departure_time_priority(
     value: list[datetime],
     *,
     tool_call_id: Annotated[str, InjectedToolCallId],
-    state: Annotated[IntentElicitationState, InjectedState],
+    state: Annotated[State, InjectedState],
     config: RunnableConfig,
 ) -> Command:
     """Add a departure time window with priority level to the FlightRequirements object. Note: change not applied to database.
@@ -115,15 +146,15 @@ def add_departure_time_priority(
 @tool
 def add_budget_priority(
     priority: int,
-    value: list[int],
+    value: list[int]=[0, 999999],
     *,
     tool_call_id: Annotated[str, InjectedToolCallId],
-    state: Annotated[IntentElicitationState, InjectedState],
+    state: Annotated[State, InjectedState],
     config: RunnableConfig,
 ) -> Command:
     """Add a budget boundary with priority level to the FlightRequirements object. Note: change not applied to database.
     priority: the priority level to add. e.g. 1(highest), 2, 3, 4
-    value: the lower and upper budget boundary, to add. e.g. [100, 500]
+    value: the lower and upper budget boundary, to add. e.g. [100, 500]. if not explicitly provided, default to [0, 999999].
     """
     current_req = state.get("flight_requirements", FlightRequirements())
     current_req.add_requirement_priority("budget", priority, value)
@@ -146,7 +177,7 @@ def update_departure_airport_priority(
     value: str,
     *,
     tool_call_id: Annotated[str, InjectedToolCallId],
-    state: Annotated[IntentElicitationState, InjectedState],
+    state: Annotated[State, InjectedState],
     config: RunnableConfig,
 ) -> Command:
     """Update the departure airport at a given priority level in the FlightRequirements object.
@@ -154,6 +185,7 @@ def update_departure_airport_priority(
     value: IATA/ICAO code, e.g. 'YUL', 'YHU'
     Note: change not applied to database, only update the FlightRequirements object.
     """
+    print("update_departure_airport_priority !!!!!!!!!!!")
     current_req = state.get("flight_requirements", FlightRequirements())
     current_req.update_requirement_priority("departure_airport", priority, value)
     return Command(
@@ -175,7 +207,7 @@ def update_arrival_airport_priority(
     value: str,
     *,
     tool_call_id: Annotated[str, InjectedToolCallId],
-    state: Annotated[IntentElicitationState, InjectedState],
+    state: Annotated[State, InjectedState],
     config: RunnableConfig,
 ) -> Command:
     """Update the arrival airport at a given priority level in the FlightRequirements object.
@@ -204,7 +236,7 @@ def update_departure_time_priority(
     value: list[datetime],
     *,
     tool_call_id: Annotated[str, InjectedToolCallId],
-    state: Annotated[IntentElicitationState, InjectedState],
+    state: Annotated[State, InjectedState],
     config: RunnableConfig,
 ) -> Command:
     """Update the departure time window at a given priority level.
@@ -229,14 +261,14 @@ def update_departure_time_priority(
 @tool
 def update_budget_priority(
     priority: int,
-    value: list[int],
+    value: list[int]=[0, 999999],
     *,
     tool_call_id: Annotated[str, InjectedToolCallId],
-    state: Annotated[IntentElicitationState, InjectedState],
+    state: Annotated[State, InjectedState],
     config: RunnableConfig,
 ) -> Command:
     """Update the budget boundary at a given priority level.
-    value must be [lower, upper].
+    value must be [lower, upper]. if not explicitly provided, default to [0, 999999].
     Note: change not applied to database, only update the FlightRequirements object.
     """
     current_req = state.get("flight_requirements", FlightRequirements())
@@ -259,7 +291,7 @@ def remove_requirement_priority(
     requirement_type: str,
     priority: int,
     *,
-    state: Annotated[IntentElicitationState, InjectedState],
+    state: Annotated[State, InjectedState],
     config: RunnableConfig,
 ) -> Command:
     """Remove a requirement value with priority level in the FlightRequirements object. Note: change not applied to database.
@@ -297,7 +329,7 @@ def remove_requirement_priority(
 def sync_flight_requirements_to_db(
     requirement_description: str,
     *,
-    state: Annotated[IntentElicitationState, InjectedState],
+    state: Annotated[State, InjectedState],
     config: RunnableConfig,
 ) -> Command:
     """Used to sync current FlightRequirements object to the database.
@@ -390,9 +422,10 @@ def sync_flight_requirements_to_db(
         else:
             # update existing requirement
             cursor.execute(
-                "UPDATE flight_requirements SET departure_airport = ?, arrival_airport = ?, departure_time = ?, budget = ? WHERE requirement_id = ?",
+                "UPDATE flight_requirements SET departure_airport = ?, flight_req_description = ?, arrival_airport = ?, departure_time = ?, budget = ? WHERE requirement_id = ?",
                 (
                     departure_airport_json,
+                    requirement_description,
                     arrival_airport_json,
                     departure_time_ISO,
                     budget_json,
