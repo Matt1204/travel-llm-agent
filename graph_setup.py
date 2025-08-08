@@ -17,3 +17,9 @@ TAXI_ASSISTANT_SENSITIVE_TOOLS = "taxi_assistant_sensitive_tools"
 TAXI_ASSISTANT_SAFE_TOOLS = "taxi_assistant_safe_tools"
 
 INTENT_GRAPH = "intent_graph"
+INTENT_ENTRY_NODE = "intent_entry_node"
+INTENT_AGENT = "intent_agent"
+
+FLIGHT_SEARCH_ENTRY_NODE = "flight_search_entry_node"
+FLIGHT_SEARCH_AGENT = "flight_search_agent"
+

@@ -1,4 +1,4 @@
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Literal, Optional, List
 from typing_extensions import TypedDict, NotRequired
 from langgraph.graph.message import AnyMessage, add_messages
 
@@ -16,13 +16,25 @@ from tools_flight import (
     update_ticket_to_new_flight,
     cancel_ticket,
 )
-from primary_assistant_tools import ToFlightAssistant, ToTaxiAssistant, fetch_user_flight_search_requirement, handoff_to_flight_intent_elicitation_tool
+from primary_assistant_tools import (
+    ToFlightAssistant,
+    ToTaxiAssistant,
+    fetch_user_flight_search_requirement,
+    handoff_to_flight_intent_elicitation_tool,
+)
 from langchain_openai import ChatOpenAI
 from langchain_community.chat_models import ChatTongyi
 from graph_setup import INTENT_GRAPH
 from langgraph.types import Command
 from langchain_core.tools import tool, InjectedToolCallId
 from langchain_core.messages import ToolMessage
+from intent_model import FlightRequirements
+
+# from intent_tools import _replace_req
+
+
+def _replace_req(old, new):
+    return new
 
 
 def update_dialog_stack(prev_val: list[str], value: list[str]):
@@ -35,9 +47,24 @@ class State(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
     user_flight_info: NotRequired[str]
     user_taxi_info: NotRequired[str]
-    dialog_state: Annotated[
-        Literal["in_primary_assistant", "in_flight_assistant", "in_taxi_assistant", "in_intent_elicitation_assistant"],
-        update_dialog_stack,
+    user_intent_info: NotRequired[str]
+
+    flight_requirements: Annotated[Optional["FlightRequirements"], _replace_req] = None
+    requirement_id: NotRequired[str] = ""
+    remaining_steps: NotRequired[int] = 24
+
+    dialog_state: NotRequired[
+        Annotated[
+            List[
+                Literal[
+                    "in_primary_assistant",
+                    "in_flight_assistant",
+                    "in_taxi_assistant",
+                    "in_intent_elicitation_assistant",
+                ]
+            ],
+            update_dialog_stack,   # keeps your custom merge logic
+        ]
     ]
 
 
@@ -71,7 +98,7 @@ class Assistant:
 #     model="gemini-2.5-flash-lite-preview-06-17", temperature=0.2
 # )
 # llm = ChatOpenAI(model="gpt-4o-mini-2024-07-18", temperature=0.2)
-llm = ChatTongyi(model="qwen-max", temperature=0.1)
+llm = ChatOpenAI(model="gpt-4.1-2025-04-14")
 
 primary_assistant_prompt = ChatPromptTemplate.from_messages(
     [
@@ -88,7 +115,8 @@ primary_assistant_prompt = ChatPromptTemplate.from_messages(
             # " When searching, be persistent. Expand your query bounds if the first search returns no results. "
             " If a search comes up empty, expand your search before giving up."
             "\n\nCurrent user flight information:\n\n<Flights>{user_flight_info}\n</Flights>"
-            "\n\nCurrent user taxi information:\n\n<Taxi>{user_taxi_info}\n</Taxi>"
+            # "\n\nCurrent user taxi information:\n\n<Taxi>{user_taxi_info}\n</Taxi>"
+            "\n\nCurrent user flight search(requirement) information:\n\n<Intent>{user_intent_info}\n</Intent>"
             "\nCurrent time: {time}.",
         ),
         ("placeholder", "{messages}"),
@@ -102,10 +130,13 @@ primary_assistant_prompt = ChatPromptTemplate.from_messages(
 # )
 
 
-
 tavily_tool = TavilySearch(max_results=1)
 # primary_assistant_tools = [tavily_tool]
-primary_assistant_tools = [fetch_user_flight_information, fetch_user_flight_search_requirement, handoff_to_flight_intent_elicitation_tool]
+primary_assistant_tools = [
+    fetch_user_flight_information,
+    fetch_user_flight_search_requirement,
+    handoff_to_flight_intent_elicitation_tool,
+]
 worker_assistant_tools = [ToFlightAssistant, ToTaxiAssistant]
 
 primary_assistant_chain = primary_assistant_prompt | llm.bind_tools(

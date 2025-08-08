@@ -10,39 +10,13 @@ from typing import Annotated
 from langgraph.prebuilt import InjectedState
 from langgraph.graph import StateGraph, START, MessagesState
 from langgraph.types import Command, Send
-from graph_setup import INTENT_GRAPH
-from langchain_core.messages import ToolMessage
+from graph_setup import INTENT_ENTRY_NODE
+from langchain_core.messages import ToolMessage, RemoveMessage
 from langchain_core.tools import tool, InjectedToolCallId
 import sqlite3
+from langchain_core.messages.utils import trim_messages, count_tokens_approximately
 from db_connection import db_file
 
-# def create_handoff_to_worker_tool(
-#     to_agent_name: str, job_description: str | None = None
-# ):
-#     name = f"transfer_to_{to_agent_name}"
-#     job_description = (
-#         job_description or f"Hand off to {to_agent_name} assistant for help."
-#     )
-
-#     @tool(name, description=job_description)
-#     def handoff_to_worker_tool(
-#         task_description: Annotated[str, "Describe what the next agent should do."],
-#         state: Annotated[MessagesState, InjectedState],
-#     ) -> Command:
-#         # Build a minimal, precise input for the next agent
-#         agent_input = {
-#             **state,  # dict unpacking
-#             "messages": [
-#                 {"role": "user", "content": "66576657"}
-#             ],  # TODO: replace with actual user input
-#             "requirement_id": "123321",  # TODO: replace with actual requirement id
-#         }
-#         return Command(
-#             goto=[Send(to_agent_name, agent_input)],  # << key line
-#             # graph=Command.PARENT,
-#         )
-
-#     return handoff_to_worker_tool
 
 @tool
 def fetch_user_flight_search_requirement(
@@ -56,7 +30,7 @@ def fetch_user_flight_search_requirement(
     passenger_id = configuration.get("passenger_id", None)
     if not passenger_id:
         raise ValueError("No passenger ID configured.")
-    
+
     conn = sqlite3.connect(db_file)
     cursor = conn.cursor()
 
@@ -70,8 +44,11 @@ def fetch_user_flight_search_requirement(
 
     if len(rows) == 0:
         return "No flight search requirements found. User can create a new flight search requirement to search for flights."
-    return "\n".join([f"{row[0]}: {row[1]}" for row in rows])
-    
+    return "\n".join(
+        [f"requirement_id: {row[0]}, description: {row[1]}" for row in rows]
+    )
+
+
 @tool
 def handoff_to_flight_intent_elicitation_tool(
     requirement_id: str,
@@ -84,26 +61,46 @@ def handoff_to_flight_intent_elicitation_tool(
     requirement_id: the id of the flight search requirement to update, obtained from fetch_user_flight_search_requirement. If empty, create a new flight search requirement.
     task_description: describe the task the intent elicitation assistant should do. e.g. "help user create a new flight requirement", "help user update existing flight requirement; update departure airport to be SFO"
     """
-    agent_input = {
-        **state,  # dict unpacking
-        "messages": [
-            {"role": "user", "content": task_description}
-        ],
-        "requirement_id": requirement_id,
-    }
+    # --- Trim message history before hand‑off ---
+    original_messages = state.get("messages", [])
+    trimmed_messages = trim_messages(
+        original_messages,
+        max_tokens=1024,
+        strategy="last",
+        token_counter=count_tokens_approximately,
+        start_on="human",
+        end_on=("ai"),
+    )
+    deletes = [
+        RemoveMessage(id=m.id) for m in original_messages if m not in trimmed_messages
+    ]
+
+    # Prepare the hand‑off marker AFTER trimming
+    appended_messages = (
+        deletes
+        + trimmed_messages
+        + [
+            ToolMessage(
+                tool_call_id=tool_call_id,
+                content=(
+                    f"Control transferred from primary assistant to intent "
+                    f"elicitation assistant, to help user on task: {task_description}"
+                ),
+            )
+        ]
+    )
+
     return Command(
-        goto=[Send(INTENT_GRAPH, agent_input)], 
         update={
+            "messages": appended_messages,
             "dialog_state": ["in_intent_elicitation_assistant"],
-            "messages": [
-                ToolMessage(
-                    tool_call_id=tool_call_id,
-                    content=f"Handing off to intent elicitation assistant to help user on task: {task_description}",
-                )
-            ],
-        }
+            "requirement_id": requirement_id,
+            "flight_requirements": None,
+        },
+        goto=INTENT_ENTRY_NODE,
         # graph=Command.PARENT,
     )
+
 
 # Treated as a tool, to be invoked by the primary assistant
 # which will become part of the AIMessage=>tool_name, args when invoked by the primary assistant
@@ -131,7 +128,7 @@ class WorkerCompleteOrEscalate(BaseModel):
     who can re-route the dialog based on the user's needs.
     You must call this tool when you have completed the current task.
     example 1: "cancel": True, "reason": "User changed their mind about the current task.",
-    example 2: "cancel": True, "reason": "I have fully completed the task.",
+    example 2: "cancel": True, "reason": "I have fully completed the task: <task_description>",
     example 3: "cancel": False, "reason": "I need to search the user's emails or calendar for more information.",
     """
 
