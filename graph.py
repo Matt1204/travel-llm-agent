@@ -15,9 +15,13 @@ import uuid
 from langgraph.types import interrupt, Command
 
 # from langgraph.graph import GraphRunInterrupted
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import ToolMessage, AIMessage
 
-from primary_assistant_tools import ToFlightAssistant, ToTaxiAssistant
+from primary_assistant_tools import (
+    ToFlightAssistant,
+    ToTaxiAssistant,
+    ToFlightSearchAssistant,
+)
 
 # from intent import intent_graph
 from graph_flight import register_flight_graph
@@ -31,8 +35,16 @@ from graph_setup import (
     TAXI_ENTRY_NODE,
     TAXI_ASSISTANT,
     INTENT_ENTRY_NODE,
+    FLIGHT_SEARCH_INVOKE_NODE,
+    FLIGHT_SEARCH_HANDOFF_NODE,
 )
 from primary_assistant_tools import fetch_user_flight_search_requirement
+from typing import Annotated
+from langchain_core.tools import InjectedToolCallId
+from langgraph.prebuilt import InjectedState
+
+from flight_search_agent import flight_search_graph
+
 
 builder = StateGraph(State)
 
@@ -80,6 +92,9 @@ def decision_after_fetch_user_info(state: State, config: RunnableConfig):
     elif dialog_state == "in_intent_elicitation_assistant":
         print("--- shortcut to Intent Elicitation Assistant ---")
         return INTENT_ENTRY_NODE
+    elif dialog_state == "in_flight_search_assistant":
+        print("--- shortcut to Flight Search Agent ---")
+        return FLIGHT_SEARCH_INVOKE_NODE
     else:
         return PRIMARY_ASSISTANT
 
@@ -92,6 +107,7 @@ builder.add_conditional_edges(
         TAXI_ASSISTANT: TAXI_ASSISTANT,
         INTENT_ENTRY_NODE: INTENT_ENTRY_NODE,
         "flight_assistant": "flight_assistant",
+        FLIGHT_SEARCH_INVOKE_NODE: FLIGHT_SEARCH_INVOKE_NODE,
     },
 )
 
@@ -116,6 +132,10 @@ def decision_after_primary_thought(state: State, config: RunnableConfig):
         elif tool_name == ToTaxiAssistant.__name__:
             print("Primary Assistant Tool Call Taxi Assistant")
             return TAXI_ENTRY_NODE
+        elif tool_name == ToFlightSearchAssistant.__name__:
+            print("Primary Assistant Tool Call Flight Search Assistant")
+
+            return FLIGHT_SEARCH_HANDOFF_NODE
         else:
             print("Primary Assistant ends: Unknown tool name......")
             return Command(
@@ -141,14 +161,120 @@ builder.add_conditional_edges(
         "flight_entry_node": "flight_entry_node",
         TAXI_ENTRY_NODE: TAXI_ENTRY_NODE,
         END: END,
+        FLIGHT_SEARCH_HANDOFF_NODE: FLIGHT_SEARCH_HANDOFF_NODE,
     },
 )
 builder.add_node(PRIMARY_ASSISTANT_TOOLS_NODE, ToolNode(primary_assistant_tools))
-
 builder.add_edge(PRIMARY_ASSISTANT_TOOLS_NODE, PRIMARY_ASSISTANT)
 
 # builder.add_node(INTENT_GRAPH, intent_graph)
 # builder.add_edge(INTENT_GRAPH, END)
+
+
+def flight_search_handoff_node(
+    state: Annotated[State, InjectedState],
+):
+    # Log the arguments provided by ToFlightSearchAssistant
+    print(
+        "-------------------------------- flight_search_handoff_node --------------------------------"
+    )
+    tool_call = state["messages"][-1].tool_calls[0]
+    tool_call_id = tool_call["id"]
+    tool_name = tool_call["name"]
+    tool_args = tool_call["args"]
+
+    req = tool_args.get("request")
+    r_id = tool_args.get("requirement_id")
+    print(
+        "[FLIGHT_SEARCH_HANDOFF_NODE] Handoff received from ToFlightSearchAssistant -> "
+        f"requirement_id={r_id}, request={req}, tool_call_id={tool_call_id}"
+    )
+
+    tool_msg = ToolMessage(
+        tool_call_id=tool_call_id,
+        content=(
+            f"Control transferred from primary assistant to flight search assistant. Request: {req}"
+        ),
+    )
+    return {
+        "messages": [tool_msg],
+        "dialog_state": ["in_flight_search_assistant"],
+        "requirement_id": r_id,
+    }
+
+
+# Node to invoke the flight search agent
+def flight_search_invoke_node(
+    supervisor_state: State,
+    config: RunnableConfig,
+):
+    print(
+        "-------------------------------- flight_search_invoke_node --------------------------------"
+    )
+    # Find the latest User message from state's message list
+    messages = supervisor_state.get("messages", [])
+    last_user_msg = None
+    for m in reversed(messages):
+        if getattr(m, "type", None) == "human":
+            last_user_msg = m
+            break
+
+    worker_input = {
+        # you can pass requirement_id down if your worker loads by ID
+        "messages": [last_user_msg] if last_user_msg else [],
+        "requirement_id": supervisor_state.get("requirement_id"),
+        "handoff": False,  # reset on entry
+        "handoff_reason": None,  # reset on entry
+        "remaining_steps": 24,  # initialize loop budget for worker agent
+    }
+
+    res = flight_search_graph.invoke(
+        worker_input, config
+    )  # own checkpointer, same thread_id
+
+    # Extract the last assistant message from the worker to surface in supervisor transcript
+    worker_msgs = res.get("messages") or []
+    last_ai_msg = None
+    for m in reversed(worker_msgs):
+        msg_type = getattr(m, "type", None)
+        if msg_type == "ai" or isinstance(m, AIMessage):
+            last_ai_msg = m
+            break
+
+    updates: dict = {}
+
+    # if worker finished its task, it sends handoff flag, pop dialog mode and surface a supervisor-level message
+    if res.get("handoff"):
+        reason = (
+            res.get("handoff_reason")
+            or "Task completed. Returning control to supervisor."
+        )
+        handoff_msg = AIMessage(content=f"[Flight Search Agent] Handoff: {reason}")
+        updates["messages"] = [handoff_msg]
+        updates["dialog_state"] = ["pop"]
+
+        return Command(
+            update=updates,
+            goto=PRIMARY_ASSISTANT,
+        )
+    else:
+        if last_ai_msg is not None:
+            # append worker's AIMessage to supervisor's message list with agent name flag
+            tagged_content = f"<agent>flight_search_agent</agent><message>{last_ai_msg.content}</message>"
+            updates["messages"] = [AIMessage(content=tagged_content)]
+
+        return Command(
+            update=updates,
+            goto=END,
+        )
+
+    # return updates
+
+
+builder.add_node(FLIGHT_SEARCH_HANDOFF_NODE, flight_search_handoff_node)
+builder.add_edge(FLIGHT_SEARCH_HANDOFF_NODE, FLIGHT_SEARCH_INVOKE_NODE)
+builder.add_node(FLIGHT_SEARCH_INVOKE_NODE, flight_search_invoke_node)
+builder.add_edge(FLIGHT_SEARCH_INVOKE_NODE, END)
 
 # The checkpointer lets the graph persist its state
 # this is a complete memory for the entire graph.

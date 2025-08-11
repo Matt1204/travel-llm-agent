@@ -21,6 +21,8 @@ from primary_assistant_tools import (
     ToTaxiAssistant,
     fetch_user_flight_search_requirement,
     handoff_to_flight_intent_elicitation_tool,
+    handoff_to_flight_search_agent,
+    ToFlightSearchAssistant,
 )
 from langchain_openai import ChatOpenAI
 from langchain_community.chat_models import ChatTongyi
@@ -61,6 +63,7 @@ class State(TypedDict):
                     "in_flight_assistant",
                     "in_taxi_assistant",
                     "in_intent_elicitation_assistant",
+                    "in_flight_search_assistant",
                 ]
             ],
             update_dialog_stack,   # keeps your custom merge logic
@@ -98,7 +101,8 @@ class Assistant:
 #     model="gemini-2.5-flash-lite-preview-06-17", temperature=0.2
 # )
 # llm = ChatOpenAI(model="gpt-4o-mini-2024-07-18", temperature=0.2)
-llm = ChatOpenAI(model="gpt-4.1-2025-04-14")
+# llm = ChatOpenAI(model="gpt-4.1-2025-04-14")
+llm = ChatTongyi(model="qwen-max", temperature=0.2)
 
 primary_assistant_prompt = ChatPromptTemplate.from_messages(
     [
@@ -136,8 +140,9 @@ primary_assistant_tools = [
     fetch_user_flight_information,
     fetch_user_flight_search_requirement,
     handoff_to_flight_intent_elicitation_tool,
+    # handoff_to_flight_search_agent,
 ]
-worker_assistant_tools = [ToFlightAssistant, ToTaxiAssistant]
+worker_assistant_tools = [ToFlightAssistant, ToTaxiAssistant, ToFlightSearchAssistant]
 
 primary_assistant_chain = primary_assistant_prompt | llm.bind_tools(
     primary_assistant_tools + worker_assistant_tools

@@ -10,12 +10,15 @@ from typing import Annotated
 from langgraph.prebuilt import InjectedState
 from langgraph.graph import StateGraph, START, MessagesState
 from langgraph.types import Command, Send
-from graph_setup import INTENT_ENTRY_NODE
+from graph_setup import INTENT_ENTRY_NODE, FLIGHT_SEARCH_INVOKE_NODE
 from langchain_core.messages import ToolMessage, RemoveMessage
 from langchain_core.tools import tool, InjectedToolCallId
 import sqlite3
 from langchain_core.messages.utils import trim_messages, count_tokens_approximately
 from db_connection import db_file
+import time
+
+# from primary_assistant_chain import State
 
 
 @tool
@@ -61,6 +64,12 @@ def handoff_to_flight_intent_elicitation_tool(
     requirement_id: the id of the flight search requirement to update, obtained from fetch_user_flight_search_requirement. If empty, create a new flight search requirement.
     task_description: describe the task the intent elicitation assistant should do. e.g. "help user create a new flight requirement", "help user update existing flight requirement; update departure airport to be SFO"
     """
+
+    # set a timeout for testing:
+    # time.sleep(30)
+    print(
+        "-------------------------------- timeout for testing --------------------------------"
+    )
     # --- Trim message history before hand‑off ---
     original_messages = state.get("messages", [])
     trimmed_messages = trim_messages(
@@ -102,13 +111,55 @@ def handoff_to_flight_intent_elicitation_tool(
     )
 
 
+@tool
+def handoff_to_flight_search_agent(
+    requirement_id: str,
+    task_description: Annotated[str, "Describe what the next agent should do."],
+    *,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+):
+    """
+    A tool to handoff control of the dialog to the flight search assistant, whcih helps user search for flights and book flights.
+    requirement_id: the requirement_id of the flight search requirement to use to search for flights, obtained from fetch_user_flight_search_requirement. If empty, create a new flight search requirement.
+    task_description: describe the task the flight search assistant should do. e.g. "help user search for flights"
+    """
+    tool_msg = ToolMessage(
+        tool_call_id=tool_call_id,
+        content=(
+            f"Control transferred from primary assistant to flight search assistant, to help user on task: {task_description}"
+        ),
+    )
+    return Command(
+        update={
+            "dialog_state": ["in_flight_search_assistant"],
+            "requirement_id": requirement_id,
+            "messages": [tool_msg],
+        },
+        goto=FLIGHT_SEARCH_INVOKE_NODE,
+    )
+
+
+class ToFlightSearchAssistant(BaseModel):
+    """Transfers work to a specialized assistant to handle flight search and booking."""
+
+    requirement_id: str = Field(
+        description="the requirement_id of the flight search requirement to use to search for flights, obtained from fetch_user_flight_search_requirement. If empty, create a new flight search requirement."
+    )
+    request: str = Field(
+        description="Any necessary followup questions the flight search assistant should clarify before proceeding."
+    )
+
+
 # Treated as a tool, to be invoked by the primary assistant
 # which will become part of the AIMessage=>tool_name, args when invoked by the primary assistant
 class ToFlightAssistant(BaseModel):
     """Transfers work to a specialized assistant to handle flight updates and cancellations."""
 
     request: str = Field(
-        description="Any necessary followup questions the update flight assistant should clarify before proceeding."
+        description="describe the task the flight search assistant should do"
+    )
+    requirement_id: str = Field(
+        description="the id of the flight search requirement to use to search for flights, obtained from fetch_user_flight_search_requirement. If empty, create a new flight search requirement."
     )
 
 
