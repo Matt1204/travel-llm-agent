@@ -23,3 +23,5 @@ INTENT_AGENT = "intent_agent"
 FLIGHT_SEARCH_ENTRY_NODE = "flight_search_entry_node"
 FLIGHT_SEARCH_AGENT = "flight_search_agent"
 
+FLIGHT_SEARCH_INVOKE_NODE = "flight_search_invoke_node"
+FLIGHT_SEARCH_HANDOFF_NODE = "flight_search_handoff_node"

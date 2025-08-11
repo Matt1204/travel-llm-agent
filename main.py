@@ -14,30 +14,15 @@ if __name__ == "__main__":
         }
     }
 
-    # Example conversation
-    # demo_questions = [
-    #     "Hi there, what time is my flight?",
-    #     "Am I allowed to update my flight to something sooner? I want to leave later today.",
-    #     "Update my flight to sometime next week then",
-    #     "The next available option is great",
-    #     # "Please update my flight to flight ID:'1459'",
-    #     "Now, what is my flight information?",
-    # 
-
-    # for q in demo_questions:
     while True:
-        # run_question(q)
         q = input("human input: ")
         if q == "exit":
             break
 
         stream = graph.stream({"messages": ("user", q)}, config, stream_mode=["values"])
         for event in stream:
-            # print(event)
-
             event[-1]["messages"][-1].pretty_print()  # chunk: contains accumulated messages
         cur_state = graph.get_state(config)
-        # print(cur_state["messages"][-1].pretty_print())
 
         # if graph hasn't reach "END" node, but aborted due to "interrupt()"
         while cur_state.next:

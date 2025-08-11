@@ -1,13 +1,15 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from langchain_core.tools import tool
+from langchain_core.tools import tool, InjectedToolCallId
 import sqlite3
+from langgraph.graph import END
+from langgraph.types import Command
 from db_connection import db_file
 from langgraph.prebuilt import InjectedState
 from langchain_core.runnables import RunnableConfig
 from typing_extensions import Annotated
-from primary_assistant_chain import State
 import uuid
+from langchain_core.messages import ToolMessage
 
 
 @tool
@@ -279,7 +281,7 @@ def book_flight(
     flight_id: int,
     fare_conditions: str,
     *,
-    state: Annotated[State, InjectedState],
+    state: Annotated[Dict[str, Any], InjectedState],
     config: RunnableConfig,
 ):
     """
@@ -434,3 +436,38 @@ def book_flight(
         },
         "flight": flight_obj,
     }
+
+
+@tool
+def flight_search_handoff_tool(
+    reason: Optional[str] = None,
+    *,
+    state: Annotated[Dict[str, Any], InjectedState],
+    config: RunnableConfig,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+):
+    """
+    A tool to mark the current task as completed and/or to handoff control of the dialog to the primary assistant,
+    who can re-route the dialog based on the user's needs.
+    Workflow:
+    - Worker calls this tool when the flight task is done or needs escalation.
+    - This tool returns state keys `handoff=True` and `handoff_reason`.
+    - The supervisor wrapper inspects the worker output and pops out of worker mode.
+    Examples:
+    - reason="Task completed: booked flight 12345"
+    - reason="Need supervisor to confirm next steps"
+    """
+
+    return Command(
+        update={
+            "handoff": True,
+            "handoff_reason": reason,
+            "messages": [
+                ToolMessage(
+                    tool_call_id=tool_call_id,
+                    content=f"Handoff: {reason}",
+                )
+            ],
+        },
+        goto=END,
+    )

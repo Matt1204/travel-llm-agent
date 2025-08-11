@@ -8,24 +8,45 @@ import uuid
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import create_react_agent
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import AnyMessage
+from langchain_core.messages import AnyMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
+from typing_extensions import TypedDict, NotRequired, Annotated
+from langgraph.graph.message import add_messages
 
 from intent_model import FlightRequirements
 from intent import load_flight_requirements_from_db
-from primary_assistant_chain import State
 from graph_setup import FLIGHT_SEARCH_ENTRY_NODE, FLIGHT_SEARCH_AGENT
 from db_connection import db_file
-from flight_search_tool import search_flights, get_flight_info_by_id, book_flight
+from flight_search_tool import (
+    search_flights,
+    get_flight_info_by_id,
+    book_flight,
+    flight_search_handoff_tool,
+)
+
+
+
+# ---------------------------------------------------------------------------
+# 0. Local State for Flight Search Agent
+# ---------------------------------------------------------------------------
+class FlightSearchState(TypedDict):
+    messages: Annotated[List[AnyMessage], add_messages]
+    flight_requirements: NotRequired[Optional["FlightRequirements"]]
+    requirement_id: NotRequired[Optional[str]]
+    # Handoff coordination fields: worker sets these to surrender control to supervisor
+    handoff: NotRequired[bool]
+    handoff_reason: NotRequired[Optional[str]]
+    # Required by prebuilt ReAct agent to limit inner tool loops
+    remaining_steps: NotRequired[int] = 24
 
 
 # ---------------------------------------------------------------------------
 # 1. DB‑fetch entry node
 # ---------------------------------------------------------------------------
-def flight_search_entry_node(state: State, config: RunnableConfig):
+def flight_search_entry_node(state: FlightSearchState, config: RunnableConfig):
     """Load user's FlightRequirements from DB using `requirement_id` in state."""
     requirement_id: str | None = state.get("requirement_id", None)
     if not requirement_id:
@@ -63,12 +84,13 @@ flight_search_prompt = ChatPromptTemplate.from_messages(
             "Current time: {time}\n\n"
             "Rules:\n"
             "- You must only search flights using the filter criteria in FlightRequirements, unless user explicitly ask you to change the filter criteria.\n"
-            "- you should actively present user with the search results so far, so user can see the progress of search in a visual way.\n"
-            "- you should actively tell user that you can try different filters criteria and show user the new filters you plan to use.\n"
+            "- you should present user with the summary of search results so far, so user can see the progress of search in a visual way.\n"
+            "- you should tell user that you can try different filters criteria and show user the new filters you plan to use.\n"
             "- with new search results, and ask user with their opinions on the results, and user their opinions to optimize the filter IF needed.\n"
             "- when NOT using base filter, you must present user with at least results from 3 different filters each time, meaning you should use search_flights tool at least 3 times, each with 1 filter criteria changed.\n"
             "- flights info should be presented in structured format, categorised by filter criteria you used.\n"
-            "- Do *not* edit the FlightRequirements here – that is handled by intent_elicitation_agent.",
+            "- Do *not* edit the FlightRequirements here – that is handled by intent_elicitation_agent.\n"
+            "- When you finish your task or need the primary assistant to take over, call the tool `flight_search_handoff_tool` with a brief reason.",
         ),
         ("placeholder", "{messages}"),
     ]
@@ -81,13 +103,13 @@ flight_search_prompt = ChatPromptTemplate.from_messages(
 # llm = ChatOpenAI(model="gpt-5-mini-2025-08-07", temperature=0.1)
 llm = ChatOpenAI(model="gpt-5-mini-2025-08-07")
 
-tools = [search_flights, get_flight_info_by_id, book_flight]
+tools = [search_flights, get_flight_info_by_id, book_flight, flight_search_handoff_tool]
 
 flight_search_agent = create_react_agent(
     model=llm,
     tools=tools,
     prompt=flight_search_prompt,
-    state_schema=State,
+    state_schema=FlightSearchState,
 )
 
 
@@ -95,6 +117,7 @@ flight_search_agent = create_react_agent(
 # 5. Graph‑registration helper
 # ---------------------------------------------------------------------------
 def register_flight_search_graph(builder: StateGraph):
+    builder.add_edge(START, FLIGHT_SEARCH_ENTRY_NODE)
     builder.add_node(FLIGHT_SEARCH_ENTRY_NODE, flight_search_entry_node)
     builder.add_node(FLIGHT_SEARCH_AGENT, flight_search_agent)
 
@@ -103,11 +126,15 @@ def register_flight_search_graph(builder: StateGraph):
     builder.add_edge(FLIGHT_SEARCH_AGENT, END)
 
 
+flight_search_builder = StateGraph(FlightSearchState)  # worker defines its own schema
+register_flight_search_graph(flight_search_builder)
+flight_search_graph = flight_search_builder.compile(checkpointer=InMemorySaver())
+
 # ---------------------------------------------------------------------------
 # 6. Demo
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    graph_builder = StateGraph(State)
+    graph_builder = StateGraph(FlightSearchState)
 
     register_flight_search_graph(graph_builder)
     # Compile = runnable LangGraph
@@ -128,20 +155,12 @@ if __name__ == "__main__":
 
         stream = intent_graph.stream(
             {
-                "messages": [("user", q)],
-                "requirement_id": "73e020b5-0a2f-4320-92c0-24de6fa3fd97",
+                "messages": [HumanMessage(content=q)],
+                **({"requirement_id": "73e020b5-0a2f-4320-92c0-24de6fa3fd97"} if "flight" in q.lower() else {}),
             },
             config,
             stream_mode=["values"],
         )
         for event in stream:
-            event[-1]["messages"][
-                -1
-            ].pretty_print()  # chunk: contains accumulated messages
-        cur_state = intent_graph.get_state(config)
-        # print(cur_state["messages"][-1].pretty_print())
-        if "flight_requirements" in cur_state.values:
-            print(
-                "\n[DEBUG] Current requirements:",
-                cur_state.values["flight_requirements"].to_json(),
-            )
+            if "messages" in event[-1] and event[-1]["messages"]:
+                event[-1]["messages"][-1].pretty_print()
