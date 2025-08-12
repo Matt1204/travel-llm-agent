@@ -53,8 +53,8 @@ def update_dates(file):
     return file
 
 
-db_file = update_dates("llm-agent-db.db")
-# db_file = "llm-agent-db.db"
+# db_file = update_dates("llm-agent-db.db")
+db_file = "llm-agent-db.db"
 # db_file = "llm-agent-db.db"
 # conn = sqlite3.connect(db)
 # cursor = conn.cursor()
