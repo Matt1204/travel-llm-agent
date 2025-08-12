@@ -22,11 +22,10 @@ from graph_setup import FLIGHT_SEARCH_ENTRY_NODE, FLIGHT_SEARCH_AGENT
 from db_connection import db_file
 from flight_search_tool import (
     search_flights,
-    get_flight_info_by_id,
+    get_flight_details,
     book_flight,
     flight_search_handoff_tool,
 )
-
 
 
 # ---------------------------------------------------------------------------
@@ -65,10 +64,9 @@ flight_search_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are a flight‑search assistant. Using the user's FlightRequirements as filter criteria, "
-            "find flights that satisfy their needs. And help user book the flight.\n\n"
+            "You are a flight‑search assistant. Using the user's FlightRequirements as filter criteria, find flights that satisfy their needs. And help user book the flight.\n"
             "Each search criteria in the FlightRequirements has requirement values labeled with priority levels(priority_1, priority_2), this priority level is used to determine a requirements value's importance/preference to user.\n"
-            "Requirement with smaller number(e.g. priority_1) is user's most preferred/highest priority need. requirement with larger number(e.g. priority_4) is user's least preferred/lowest priority need.\n"
+            "Requirement with smaller number(e.g. priority_1) is user's most preferred/highest need. requirement with larger number(e.g. priority_4) is user's least preferred/lowest need.\n"
             "Flight Search Process:\n"
             "step 1: apply the base filter: the filter applies only priority_1 criteria/requirements.\n"
             "step 2: if user not satisfied with base filter's results, politelty as user the reason. then apply new filters by only modifying 1 criteria to new priority level at a time, until you have searched all combinations of priority levels.\n"
@@ -76,21 +74,22 @@ flight_search_prompt = ChatPromptTemplate.from_messages(
             "step 3: if user not satisfied with the results of step 2, politely ask user to explain why. "
             "apply new any filters criteria that you think would be most likely to find user's most preferred/highest priority needs.\n"
             "Booking Process:\n"
-            "step 1: if user is satisfied with the results of Flight Search Process.\n"
-            "step 2: use get_flight_info_by_id tool to get the detailed flight information, and present it to user.\n"
+            "step 1: if user is satisfied with the results of Flight Search Process, you will need to fetch the detailed flight information, and present it to user.\n"
+            "step 2: use get_flight_details tool by providing the parameters that most cloesly describe the flight user is looking for, you will find these filter criteria in the previous search results.\n"
             "step 3: if user confirm the flight, use book_flight tool to book the flight.\n"
             "\n"
             "FlightRequirements:\n{flight_requirements}\n"
             "Current time: {time}\n\n"
             "Rules:\n"
             "- You must only search flights using the filter criteria in FlightRequirements, unless user explicitly ask you to change the filter criteria.\n"
-            "- you should present user with the summary of search results so far, so user can see the progress of search in a visual way.\n"
+            "- when NOT using base filter, you must present user with at least results from 3 different filters each time, meaning you should use search_flights tool at least 3 times, each with 1 filter criteria changed from base filter.\n"
+            "- you should present user with the concise summary of search results so far, so user can see the progress of search in a visual way.\n"
             "- you should tell user that you can try different filters criteria and show user the new filters you plan to use.\n"
             "- with new search results, and ask user with their opinions on the results, and user their opinions to optimize the filter IF needed.\n"
-            "- when NOT using base filter, you must present user with at least results from 3 different filters each time, meaning you should use search_flights tool at least 3 times, each with 1 filter criteria changed.\n"
             "- flights info should be presented in structured format, categorised by filter criteria you used.\n"
-            "- Do *not* edit the FlightRequirements here – that is handled by intent_elicitation_agent.\n"
-            "- When you finish your task or need the primary assistant to take over, call the tool `flight_search_handoff_tool` with a brief reason.",
+            "- Never expose the technical terms like 'base filter', 'priority_1', 'FlightRequirements object' to user, explain them in natural language\n"
+            "- You are only entitled to help user search and book flights. Any user non-related request should be politely declined. Any request beyond your scope should be handoff to primary assistant.\n"
+            "- When you finish your task or need the primary assistant to take over, you MUST call the tool `flight_search_handoff_tool` with a brief reason.",
         ),
         ("placeholder", "{messages}"),
     ]
@@ -103,7 +102,7 @@ flight_search_prompt = ChatPromptTemplate.from_messages(
 # llm = ChatOpenAI(model="gpt-5-mini-2025-08-07", temperature=0.1)
 llm = ChatOpenAI(model="gpt-5-mini-2025-08-07")
 
-tools = [search_flights, get_flight_info_by_id, book_flight, flight_search_handoff_tool]
+tools = [search_flights, book_flight, flight_search_handoff_tool, get_flight_details]
 
 flight_search_agent = create_react_agent(
     model=llm,
@@ -156,7 +155,7 @@ if __name__ == "__main__":
         stream = intent_graph.stream(
             {
                 "messages": [HumanMessage(content=q)],
-                **({"requirement_id": "73e020b5-0a2f-4320-92c0-24de6fa3fd97"} if "flight" in q.lower() else {}),
+                "requirement_id": "39ff0c3a-ca74-41f3-b7e8-e390a2173731",
             },
             config,
             stream_mode=["values"],
