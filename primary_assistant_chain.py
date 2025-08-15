@@ -1,4 +1,4 @@
-from typing import Annotated, Literal, Optional, List
+from typing import Annotated, Literal, Optional, List, Dict, Any
 from typing_extensions import TypedDict, NotRequired
 from langgraph.graph.message import AnyMessage, add_messages
 
@@ -31,6 +31,25 @@ from langgraph.types import Command
 from langchain_core.tools import tool, InjectedToolCallId
 from langchain_core.messages import ToolMessage
 from intent_model import FlightRequirements
+from flight_model import FlightOfferModel
+
+
+class FDSnapshot(TypedDict):
+    """One discovery attempt's snapshot."""
+    id: str # when object is created
+    filter_used: NotRequired[Optional[Dict[str, Any]]]
+    sys_rec_condition: NotRequired[Optional[Dict[str, Any]]] # filled once filter created
+    
+    flights: NotRequired[Optional[List[FlightOfferModel]]] # filled after serach_flight
+    is_better_deal: NotRequired[Optional[bool]] # also filled after search_flight
+
+    comment: NotRequired[Optional[str]] # filled by revisor
+
+class FDSessionInfo(TypedDict):
+    """Flight Discovery session state kept on the graph."""
+    baseline: NotRequired[Optional[FDSnapshot]]
+    system_discovered: NotRequired[List[FDSnapshot]] = []
+
 
 # from intent_tools import _replace_req
 
@@ -44,6 +63,19 @@ def update_dialog_stack(prev_val: list[str], value: list[str]):
         return prev_val[:-1]
     return prev_val + value
 
+def append_candidate(prev_val: list[FDSnapshot], value: list[FDSnapshot]):
+    return prev_val + value
+
+def resettable_add_messages(prev_val: list[AnyMessage], value):
+    # Allow hard reset of the message history when a sentinel is provided.
+    if value == "__RESET__":
+        return []
+    # Also allow ["__RESET__", <msg1>, <msg2>, ...] to both clear and seed new messages.
+    if isinstance(value, list) and value and value[0] == "__RESET__":
+        value = value[1:]
+        prev_val = []
+    return add_messages(prev_val, value)
+
 
 class State(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
@@ -51,10 +83,19 @@ class State(TypedDict):
     user_taxi_info: NotRequired[str]
     user_intent_info: NotRequired[str]
 
+    # For Intent Elicitation Assistant
     flight_requirements: Annotated[Optional["FlightRequirements"], _replace_req] = None
-    requirement_id: NotRequired[str] = ""
-    remaining_steps: NotRequired[int] = 24
 
+    # For Flight Search Assistant
+    requirement_id: NotRequired[str] = ""
+
+    # For Flight Discovery Assistant
+    flight_discovery_messages: Annotated[list[AnyMessage], resettable_add_messages] = []
+    fd_session_info: NotRequired[Annotated[Optional["FDSessionInfo"], _replace_req]]
+    # baseline_flight: NotRequired[Optional[FlightOfferModel]] = None
+    baseline_flight_candidates: Annotated[list[FDSnapshot], append_candidate] = []
+
+    remaining_steps: NotRequired[int] = 24
     dialog_state: NotRequired[
         Annotated[
             List[
@@ -64,6 +105,7 @@ class State(TypedDict):
                     "in_taxi_assistant",
                     "in_intent_elicitation_assistant",
                     "in_flight_search_assistant",
+                    "in_flight_discovery_assistant",
                 ]
             ],
             update_dialog_stack,   # keeps your custom merge logic
@@ -73,25 +115,65 @@ class State(TypedDict):
 
 # A warpper for the chain(node), to add user authentication and response validation
 class Assistant:
-    def __init__(self, runnable: Runnable):
+    def __init__(self, runnable: Runnable, messages_key: Optional[str] = None, **kwargs):
+        # Accept alias `message_key` for forward-compatibility
+        if messages_key is None:
+            alias = kwargs.pop("message_key", None)
+            if alias is not None:
+                messages_key = alias
+
         self.runnable = runnable
+        self.messages_key = messages_key or "messages"
 
     def __call__(self, state: State, config: RunnableConfig):
-        while True:
-            # feeding State to chain, State has "messages" and "user_info", which will be appended to system prompt
+        msg_key = self.messages_key
+        existing_msgs = state.get(msg_key) or []
+        if not isinstance(existing_msgs, list):
+            existing_msgs = []
+        safe_state = {**state, msg_key: existing_msgs}
 
-            result = self.runnable.invoke(state)
-            # If the LLM happens to return an empty response, we will re-prompt it for an actual response.
-            if not result.tool_calls and (
-                not result.content
-                or isinstance(result.content, list)
-                and not result.content[0].get("text")
-            ):
-                messages = state["messages"] + [("user", "Respond with a real output.")]
-                state = {**state, "messages": messages}
-            else:
-                break
-        return {"messages": result}
+        # Retry once if the model returns an empty response with no tool calls
+        max_reprompts = 1
+        attempts = 0
+
+        while True:
+            # Pass through the provided config for tracing/callbacks
+            result = self.runnable.invoke(safe_state, config=config)
+
+            # Robust emptiness check
+            tool_calls = getattr(result, "tool_calls", None)
+            content = getattr(result, "content", None)
+
+            # if llm responsehas content/tool_call
+            def _is_empty():
+                if tool_calls:
+                    return False
+                if content is None:
+                    return True
+                if isinstance(content, str):
+                    return content.strip() == ""
+                if isinstance(content, list):
+                    for part in content:
+                        text = None
+                        if isinstance(part, dict):
+                            text = part.get("text") or part.get("content")
+                        else:
+                            text = getattr(part, "text", None) or getattr(part, "content", None)
+                        if isinstance(text, str) and text.strip():
+                            return False
+                    return True
+                return False
+
+            if _is_empty() and attempts < max_reprompts:
+                attempts += 1
+                reprompt = ("user", "Respond with a real output.")
+                safe_state = {**safe_state, msg_key: (safe_state.get(msg_key) or []) + [reprompt]}
+                continue
+
+            break
+
+        # update message list in state
+        return {msg_key: result}
 
 
 # --------- primary assistant chain ---------
@@ -102,26 +184,34 @@ class Assistant:
 # )
 # llm = ChatOpenAI(model="gpt-4o-mini-2024-07-18", temperature=0.2)
 # llm = ChatOpenAI(model="gpt-4.1-2025-04-14")
-llm = ChatTongyi(model="qwen-max", temperature=0.2)
+# llm = ChatTongyi(model="qwen-max", temperature=0.2)
+llm = ChatOpenAI(model="gpt-5-mini-2025-08-07")
 
 primary_assistant_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are a helpful customer support assistant to help user maage their trips. "
-            "Your primary role is to search for flight search requirements/flight information to answer customer queries."
-            "If a customer requests to create/update/cancel a flight, flight search requirement, or taxi, delegate the task to the appropriate specialized assistant by invoking the corresponding tool. You are not able to make these types of changes yourself."
-            "Only the specialized assistants are given permission to do this for the user."
-            "The user is not aware of the different specialized assistants, so do not mention them; just quietly delegate through function calls. "
-            "If the user requests to search for their flights, you can use the fetch_user_flight_search_requirement tool to fetch the user's flight search requirements from the database. "
-            "If user requests to search for their flight search requirements(which is a set of criteria user specifies to search for flights), you can use the fetch_user_flight_search_requirement tool"
-            "Provide detailed information to the customer, and always double-check the database before concluding that information is unavailable. "
-            # " When searching, be persistent. Expand your query bounds if the first search returns no results. "
-            " If a search comes up empty, expand your search before giving up."
-            "\n\nCurrent user flight information:\n\n<Flights>{user_flight_info}\n</Flights>"
+            "You are a Trip Supervisor Agent to help user manage their trips"
+            "Your job is:\n"
+            "1) Load the user’s trip-related context from the database/tools."
+            "2) Decide whether to answer directly or delegate to a worker assistant via tool calls."
+            "3) Never reveal internal tools, schemas, or assistant names—present a single, cohesive assistant to the user."
+            "'Flight search Requiremnt': a set of filters(arrival/departure airport, budget, etc.) user specifies to search for flights. 'Flight search Requiremnt' is managed by the intent elicitation assistant, transfer to intent elicitation assistant if user request is related to flight search requirement."
+            "'Flight search' and 'Flight booking': use Flight Search Requiremnt to search for flights and book flights. 'Flight search' and 'Flight booking' are managed by the flight search assistant, transfer to flight search assistant if user request is related to flight search."
+            "'System Suggested flights': System automatically applies the flight search requirement that are not part of user's original flight search requirement, aim to find better deal for users. It is managed by the Flight Discovery Assistant."
+            "If a customer ask you to modify their flight search requirement, flight booking, or serach for flights, delegate the task to the appropriate specialized assistant by invoking the corresponding tool. You are not able to make these types of changes yourself"
+            "If user request is related to flight search requirement, transfer to intent elicitation assistant by invoking handoff_to_flight_intent_elicitation_tool tool."
+            "If user request is related to flight search, transfer to flight search assistant by invoking handoff_to_flight_search_agent tool."
+            "If user request is related to system suggested flights, transfer to flight discovery assistant by invoking handoff_to_flight_discovery_assistant tool."
+            "RULES:\n"
+            "1. You are only permitted to provide user with trip-related ifnormation. if user request is un-relevant or out of your ability, reject user politely."
+            "2. Never expose the technical terms to user, explain them in natural language"
+            "3. Do not mention who you are, and existence of your helper assistants, just act as the proxy for all assistants."
+            # "\n\nCurrent user flight information:\n\n<Flights>{user_flight_info}\n</Flights>"
             # "\n\nCurrent user taxi information:\n\n<Taxi>{user_taxi_info}\n</Taxi>"
-            "\n\nCurrent user flight search(requirement) information:\n\n<Intent>{user_intent_info}\n</Intent>"
-            "\nCurrent time: {time}.",
+            "CURRENT CONTEXT:"
+            "\n- Current user flight search requirement:\n\n<Intent>{user_intent_info}\n</Intent>"
+            "\n- Current time: {time}.",
         ),
         ("placeholder", "{messages}"),
     ]

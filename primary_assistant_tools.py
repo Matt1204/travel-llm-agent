@@ -67,9 +67,10 @@ def handoff_to_flight_intent_elicitation_tool(
 
     # set a timeout for testing:
     # time.sleep(30)
-    print(
-        "-------------------------------- timeout for testing --------------------------------"
-    )
+    # print(
+    #     "-------------------------------- timeout for testing --------------------------------"
+    # )
+    print("-------------------------------- handoff to intent elicitation assistant --------------------------------")
     # --- Trim message history before hand‑off ---
     original_messages = state.get("messages", [])
     trimmed_messages = trim_messages(
@@ -179,27 +180,9 @@ class WorkerCompleteOrEscalate(BaseModel):
     who can re-route the dialog based on the user's needs.
     You must call this tool when you have completed the current task.
     example 1: "cancel": True, "reason": "User changed their mind about the current task.",
-    example 2: "cancel": True, "reason": "I have fully completed the task: <task_description>",
-    example 3: "cancel": False, "reason": "I need to search the user's emails or calendar for more information.",
+    example 2: "cancel": False, "reason": "I have fully completed the task: <task_description>",
+    example 3: "cancel": True, "reason": "I need help to search the user's emails or calendar for more information.",
     """
 
     cancel: bool = True
     reason: str
-
-    # class Config:
-    #     json_schema_extra = {
-    #         "examples": [
-    #             {
-    #                 "cancel": True,
-    #                 "reason": "User changed their mind about the current task.",
-    #             },
-    #             {
-    #                 "cancel": True,
-    #                 "reason": "I have fully completed the task.",
-    #             },
-    #             {
-    #                 "cancel": False,
-    #                 "reason": "I need to search the user's emails or calendar for more information.",
-    #             },
-    #         ]
-    #     }

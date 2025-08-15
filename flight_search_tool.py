@@ -16,6 +16,7 @@ from langchain_core.runnables import RunnableConfig
 from typing_extensions import Annotated
 import uuid
 from langchain_core.messages import ToolMessage
+from flight_model import FlightOfferModel
 
 
 @tool
@@ -87,7 +88,7 @@ def search_flights(
         departure_time_window=[window_start, window_end],
         adults=1,
         currency="CAD",
-        non_stop=None,
+        non_stop=True,
         included_airline_code=None,
         max_results_per_day=50,
         additional_params=None,
@@ -100,27 +101,19 @@ def search_flights(
     if budget is not None:
         try:
             b = int(budget)
-            normalized = [o for o in normalized if o.get("min_amount") <= b]
+
+            def _min_amt(x):
+                try:
+                    return getattr(x, "min_amount")
+                except Exception:
+                    return (x or {}).get("min_amount")
+
+            normalized = [
+                o for o in normalized if _min_amt(o) is not None and _min_amt(o) <= b
+            ]
         except Exception:
             # If budget is malformed, ignore filtering rather than fail hard
             pass
-
-    # Sort by departure time then price if available
-    # def _to_dt(val):
-    #     if not val:
-    #         return datetime.max
-    #     s = str(val).replace("Z", "")
-    #     try:
-    #         return datetime.fromisoformat(s)
-    #     except Exception:
-    #         return datetime.max
-
-    # normalized.sort(
-    #     key=lambda i: (
-    #         _to_dt(i.get("scheduled_departure")),
-    #         i.get("min_amount") or 10**12,
-    #     )
-    # )
 
     filters_applied = {
         "departure_airport": departure_airport,
@@ -148,8 +141,14 @@ def search_flights(
             #         total += max(0, len(segs) - 1)
             #     return total
 
-            direct_flights = [f for f in normalized if f["is_direct"]]
-            transfer_flights = [f for f in normalized if not f["is_direct"]]
+            def _is_direct(x):
+                try:
+                    return bool(getattr(x, "is_direct"))
+                except Exception:
+                    return bool((x or {}).get("is_direct"))
+
+            direct_flights = [f for f in normalized if _is_direct(f)]
+            transfer_flights = [f for f in normalized if not _is_direct(f)]
 
             ranked_results: Dict[str, Any] = {}
             if direct_flights:
@@ -170,18 +169,18 @@ def search_flights(
     return response
 
 
-search_flights.invoke(
-    {
-        "departure_airport": "LHR",
-        "arrival_airport": "CDG",
-        "departure_time": [
-            datetime(2025, 8, 19, 0, 0, 0),
-            datetime(2025, 8, 20, 0, 0, 0),
-        ],
-        "budget": 1000,
-        "top_k": 10,
-    }
-)
+# search_flights.invoke(
+#     {
+#         "departure_airport": "LHR",
+#         "arrival_airport": "CDG",
+#         "departure_time": [
+#             datetime(2025, 8, 19, 0, 0, 0),
+#             datetime(2025, 8, 20, 0, 0, 0),
+#         ],
+#         "budget": 1000,
+#         "top_k": 10,
+#     }
+# )
 
 
 @tool

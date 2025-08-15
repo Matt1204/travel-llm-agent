@@ -6,8 +6,16 @@ from dataclasses import dataclass
 import json
 from datetime import datetime, timedelta, date
 from typing import Any, Dict, List, Optional, Tuple, Union
-
+from pydantic import BaseModel, Field, ConfigDict, field_validator
+from typing import Literal
+from flight_model import _to_datetime, FlightOfferModel
 import requests
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv is optional
 
 try:
     # Optional: import the intent model if available, for type hints and helpers
@@ -30,15 +38,6 @@ AMADEUS_BASE_URL = {
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
     value = os.getenv(name)
     return value if value is not None else default
-
-
-def _to_datetime(value: Union[str, datetime]) -> datetime:
-    if isinstance(value, datetime):
-        return value
-    if isinstance(value, str):
-        v = value.replace("Z", "")
-        return datetime.fromisoformat(v)
-    raise TypeError(f"Unsupported datetime value: {value!r}")
 
 
 def _daterange(start_date: date, end_date: date) -> List[date]:
@@ -68,40 +67,135 @@ class AmadeusClient:
         self,
         client_id: Optional[str] = None,
         client_secret: Optional[str] = None,
-        environment: str = "test",
+        environment: str = "production",
         base_url: Optional[str] = None,
         timeout_seconds: int = 20,
+        max_retries: int = 3,
+        base_delay_ms: int = 100,  # Base delay for rate limiting (100ms = 10 TPS)
     ) -> None:
+        # Check for pre-obtained access token first
+        self._pre_obtained_token = _env("AMADEUS_ACCESS_TOKEN") or _env("AMADEUS_BEARER_TOKEN")
+        self._token_expires_at = None
+        
+        # If we have a token expiry timestamp, parse it
+        expires_at_str = _env("AMADEUS_TOKEN_EXPIRES_AT")
+        if expires_at_str:
+            try:
+                self._token_expires_at = float(expires_at_str)
+            except (ValueError, TypeError):
+                self._token_expires_at = None
+        
+        # Only require client credentials if we don't have a pre-obtained token
         self.client_id = client_id or _env("AMADEUS_CLIENT_ID")
         self.client_secret = client_secret or _env("AMADEUS_CLIENT_SECRET")
         self.environment = environment or _env("AMADEUS_ENV", "test") or "test"
-        self.base_url = (
-            base_url
-            or _env("AMADEUS_BASE_URL")
-            or AMADEUS_BASE_URL.get(self.environment, AMADEUS_BASE_URL["test"])
-        )
-
-        if not self.client_id or not self.client_secret:
+        
+        # If no pre-obtained token, require client credentials
+        if not self._pre_obtained_token and (not self.client_id or not self.client_secret):
             raise RuntimeError(
-                "Missing Amadeus credentials. Set AMADEUS_CLIENT_ID and AMADEUS_CLIENT_SECRET."
+                "Missing Amadeus credentials. Either set AMADEUS_ACCESS_TOKEN/AMADEUS_BEARER_TOKEN "
+                "or set AMADEUS_CLIENT_ID and AMADEUS_CLIENT_SECRET."
             )
 
-        self._oauth_url = AMADEUS_OAUTH_URL.get(
-            self.environment, AMADEUS_OAUTH_URL["test"]
-        )
+        self.base_url = AMADEUS_BASE_URL["production"]
+        self._oauth_url = AMADEUS_OAUTH_URL["production"]
         self._token: Optional[OAuthToken] = None
         self._timeout = timeout_seconds
+        self._max_retries = max_retries
+        self._base_delay_ms = base_delay_ms
 
         self._session = requests.Session()
+
+    def _make_request_with_retry(self, method: str, url: str, **kwargs) -> requests.Response:
+        """
+        Make HTTP request with retry logic for rate limiting and other transient errors.
+        
+        Rate limit handling:
+        - Free tier: 10 TPS = 1 request per 100ms
+        - When rate limited, wait with exponential backoff starting from base_delay_ms
+        """
+        last_exception = None
+        
+        for attempt in range(self._max_retries + 1):
+            try:
+                # Add rate limiting delay between requests (100ms = 10 TPS)
+                if attempt > 0:
+                    delay_ms = self._base_delay_ms * (2 ** (attempt - 1))  # Exponential backoff
+                    print(f"Rate limit hit! Waiting {delay_ms}ms before retry {attempt}/{self._max_retries}")
+                    time.sleep(delay_ms / 1000.0)
+                
+                response = self._session.request(method, url, **kwargs)
+                
+                # Check for rate limiting (429 Too Many Requests)
+                if response.status_code == 429:
+                    print(f"Rate limit exceeded (429). Attempt {attempt + 1}/{self._max_retries + 1}")
+                    if attempt < self._max_retries:
+                        continue
+                    else:
+                        print("Max retries reached for rate limiting")
+                        return response
+                
+                # Check for other retryable errors (5xx server errors)
+                elif response.status_code >= 500:
+                    print(f"Server error {response.status_code}. Attempt {attempt + 1}/{self._max_retries + 1}")
+                    if attempt < self._max_retries:
+                        continue
+                    else:
+                        print("Max retries reached for server errors")
+                        return response
+                
+                # Success or non-retryable error
+                return response
+                
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                last_exception = e
+                print(f"Network error: {e}. Attempt {attempt + 1}/{self._max_retries + 1}")
+                if attempt < self._max_retries:
+                    continue
+                else:
+                    print("Max retries reached for network errors")
+                    raise last_exception
+        
+        # Should never reach here, but just in case
+        if last_exception:
+            raise last_exception
+        return response
 
     # ----------------------
     # OAuth
     # ----------------------
     def _ensure_token(self) -> str:
+        # If we have a pre-obtained token, use it
+        if self._pre_obtained_token:
+            # Check if token has expired (if expiry timestamp is provided)
+            if self._token_expires_at is not None and time.time() >= self._token_expires_at:
+                # Token has expired, re-read from environment in case it was refreshed
+                self._pre_obtained_token = _env("AMADEUS_ACCESS_TOKEN") or _env("AMADEUS_BEARER_TOKEN")
+                expires_at_str = _env("AMADEUS_TOKEN_EXPIRES_AT")
+                if expires_at_str:
+                    try:
+                        self._token_expires_at = float(expires_at_str)
+                    except (ValueError, TypeError):
+                        self._token_expires_at = None
+                
+                # If still expired or no token, fall back to OAuth
+                if not self._pre_obtained_token or (
+                    self._token_expires_at is not None and time.time() >= self._token_expires_at
+                ):
+                    # Reset pre-obtained token and fall through to OAuth
+                    self._pre_obtained_token = None
+                else:
+                    return self._pre_obtained_token
+            else:
+                # Token is valid or no expiry info
+                return self._pre_obtained_token
+        
+        # Fall back to OAuth flow
         if self._token and self._token.is_valid():
             return self._token.access_token
 
-        resp = self._session.post(
+        resp = self._make_request_with_retry(
+            "POST",
             self._oauth_url,
             data={
                 "grant_type": "client_credentials",
@@ -167,8 +261,12 @@ class AmadeusClient:
             params.update(additional_params)
 
         url = f"{self.base_url}/v2/shopping/flight-offers"
-        resp = self._session.get(
-            url, headers=self._auth_headers(), params=params, timeout=self._timeout
+        resp = self._make_request_with_retry(
+            "GET", 
+            url, 
+            headers=self._auth_headers(), 
+            params=params, 
+            timeout=self._timeout
         )
         if resp.status_code >= 400:
             return {
@@ -188,8 +286,8 @@ class AmadeusClient:
         departure_time_window: List[Union[str, datetime]],
         *,
         adults: int = 1,
-        currency: Optional[str] = None,
-        non_stop: Optional[bool] = None,
+        currency: Optional[str] = "CAD",
+        non_stop: Optional[bool] = True,
         max_results_per_day: int = 50,
         included_airline_code: Optional[str] = None,
         additional_params: Optional[Dict[str, Any]] = None,
@@ -283,8 +381,13 @@ class AmadeusClient:
 
         url = f"{self.base_url}/v1/shopping/flight-offers/pricing"
         headers = {**self._auth_headers(), "Content-Type": "application/json"}
-        resp = self._session.post(
-            url, headers=headers, params=params, json=body, timeout=self._timeout
+        resp = self._make_request_with_retry(
+            "POST", 
+            url, 
+            headers=headers, 
+            params=params, 
+            json=body, 
+            timeout=self._timeout
         )
         if resp.status_code >= 400:
             return {
@@ -295,9 +398,7 @@ class AmadeusClient:
         return resp.json()
 
 
-# ----------------------
-# Builders & Normalizers to ease transition from DB tools
-# ----------------------
+
 def select_highest_priority(requirement_obj: Any) -> Optional[Any]:
     if requirement_obj is None:
         return None
@@ -365,26 +466,31 @@ def build_search_from_requirements(
     return dep_code, arr_code, dt_window, budget_max
 
 
-def normalize_offers_for_tool(offers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def normalize_offers_for_tool(offers: List[Dict[str, Any]]) -> List[FlightOfferModel]:
     """
-    Convert Amadeus flight-offer objects to a simplified structure reminiscent of the
-    DB-backed `search_flights` tool output (not 1:1, but close enough to adapt quickly).
+    Convert Amadeus flight-offer objects to a standardized Pydantic structure.
 
-    Improvements:
-    - Correctly handle N segments across 1..N itineraries by scanning all segments.
-    - Compute earliest departure and latest arrival across all segments.
-    - Return a `segments` array with per-segment details, and a `flight_numbers` list.
-    - Preserve `flight_no` (first segment's flight number) for backward compatibility.
-    - Attach the raw offer under `raw` for downstream ranking and filtering.
-
-    Review note (potentially error-prone):
-    - Pricing uses `grandTotal` (fallback to `total`) and rounds to int. If exact cents or
-      fees matter, use the pricing API or keep the original decimal string.
-    - Cabin inference: read from the first traveler's first segment; mixed-cabin offers
-      may be misrepresented.
+    Differences vs. the legacy dict:
+    - Uses `FlightOfferModel` / `SegmentModel` / `FareModel` for stronger typing.
+    - Datetime fields are parsed into `datetime` objects.
+    - Includes `raw` (excluded from dumps) for downstream ranking if needed.
     """
-    normalized: List[Dict[str, Any]] = []
-    for offer in offers:
+    # Handle case where offers might be None or not a list
+    if not offers:
+        return []
+    
+    # Ensure offers is a list
+    if not isinstance(offers, list):
+        print(f"Warning: offers is not a list, got type: {type(offers)}")
+        return []
+    
+    normalized: List[FlightOfferModel] = []
+    for i, offer in enumerate(offers):
+        # Skip non-dictionary entries
+        if not isinstance(offer, dict):
+            print(f"Warning: offer at index {i} is not a dictionary, got type: {type(offer)}, value: {offer}")
+            continue
+            
         itineraries = offer.get("itineraries") or []
         if not itineraries:
             continue
@@ -400,7 +506,6 @@ def normalize_offers_for_tool(offers: List[Dict[str, Any]]) -> List[Dict[str, An
         if not all_segments:
             continue
 
-        # Earliest departure and latest arrival across ALL segments
         def _safe_get(d: Dict[str, Any], *keys: str) -> Any:
             cur: Any = d
             for k in keys:
@@ -414,16 +519,12 @@ def normalize_offers_for_tool(offers: List[Dict[str, Any]]) -> List[Dict[str, An
                 return None
             s = str(val).replace("Z", "")
             try:
-                # ensure it's a valid isoformat; return standardized string
                 from datetime import datetime as _dt
-
                 return _dt.fromisoformat(s).isoformat(sep=" ")
             except Exception:
-                # keep original if not strictly isoformat-parsable
                 return str(val)
 
-        # Determine first (earliest) departure and last (latest) arrival
-        dep_candidates: List[Tuple[str, str]] = []  # (iata, at)
+        dep_candidates: List[Tuple[str, str]] = []
         arr_candidates: List[Tuple[str, str]] = []
 
         for seg in all_segments:
@@ -436,20 +537,14 @@ def normalize_offers_for_tool(offers: List[Dict[str, Any]]) -> List[Dict[str, An
             if arr_iata and arr_at:
                 arr_candidates.append((arr_iata, arr_at))
 
-        # Fallbacks if parsing failed
         if dep_candidates:
-            # earliest by timestamp-like string; attempt datetime ordering
             try:
                 from datetime import datetime as _dt
-
-                dep_candidates.sort(
-                    key=lambda x: _dt.fromisoformat(x[1].replace("Z", ""))
-                )
+                dep_candidates.sort(key=lambda x: _dt.fromisoformat(x[1].replace("Z", "")))
             except Exception:
                 dep_candidates.sort(key=lambda x: x[1])
             dep_airport, dep_time = dep_candidates[0]
         else:
-            # fallback to first segment raw values
             first_seg = all_segments[0]
             dep_airport = _safe_get(first_seg, "departure", "iataCode")
             dep_time = _safe_get(first_seg, "departure", "at")
@@ -457,10 +552,7 @@ def normalize_offers_for_tool(offers: List[Dict[str, Any]]) -> List[Dict[str, An
         if arr_candidates:
             try:
                 from datetime import datetime as _dt
-
-                arr_candidates.sort(
-                    key=lambda x: _dt.fromisoformat(x[1].replace("Z", ""))
-                )
+                arr_candidates.sort(key=lambda x: _dt.fromisoformat(x[1].replace("Z", "")))
             except Exception:
                 arr_candidates.sort(key=lambda x: x[1])
             arr_airport, arr_time = arr_candidates[-1]
@@ -469,7 +561,6 @@ def normalize_offers_for_tool(offers: List[Dict[str, Any]]) -> List[Dict[str, An
             arr_airport = _safe_get(last_seg, "arrival", "iataCode")
             arr_time = _safe_get(last_seg, "arrival", "at")
 
-        # Build per-segment details + flight numbers
         segment_details: List[Dict[str, Any]] = []
         flight_numbers: List[str] = []
         for seg in all_segments:
@@ -491,10 +582,8 @@ def normalize_offers_for_tool(offers: List[Dict[str, Any]]) -> List[Dict[str, An
                 }
             )
 
-        # Back-compat: primary flight_no is the first segment's number if present
         primary_flight_no = flight_numbers[0] if flight_numbers else None
 
-        # Price
         price = (offer.get("price") or {}).get("grandTotal") or (
             offer.get("price") or {}
         ).get("total")
@@ -503,7 +592,6 @@ def normalize_offers_for_tool(offers: List[Dict[str, Any]]) -> List[Dict[str, An
         except Exception:
             amount_int = None
 
-        # best-effort cabin from fareDetails
         traveler_pricings = offer.get("travelerPricings") or []
         cabin = None
         if traveler_pricings:
@@ -511,25 +599,31 @@ def normalize_offers_for_tool(offers: List[Dict[str, Any]]) -> List[Dict[str, An
             if fd:
                 cabin = fd[0].get("cabin")
 
-        normalized.append(
-            {
-                "flight_no": primary_flight_no,
-                "flight_numbers": flight_numbers,
-                "scheduled_departure": dep_time,
-                "scheduled_arrival": arr_time,
-                "departure_airport": dep_airport,
-                "arrival_airport": arr_airport,
-                "segments": segment_details,
-                "fares": [
-                    {
-                        "fare_conditions": str(cabin or "UNKNOWN"),
-                        "amount": amount_int if amount_int is not None else 0,
-                    }
-                ],
-                "is_direct": len(all_segments) == 1,
-                "min_amount": amount_int if amount_int is not None else None,
-            }
-        )
+        try:
+            model = FlightOfferModel.model_validate(
+                {
+                    "flight_no": primary_flight_no,
+                    "flight_numbers": flight_numbers,
+                    "scheduled_departure": dep_time,
+                    "scheduled_arrival": arr_time,
+                    "departure_airport": dep_airport,
+                    "arrival_airport": arr_airport,
+                    "segments": segment_details,
+                    "fares": [
+                        {
+                            "fare_conditions": str(cabin or "UNKNOWN"),
+                            "amount": amount_int if amount_int is not None else 0,
+                        }
+                    ],
+                    "is_direct": len(all_segments) == 1,
+                    "min_amount": amount_int if amount_int is not None else None,
+                    # "raw": offer,
+                }
+            )
+            normalized.append(model)
+        except Exception:
+            # If validation fails for any reason, skip this offer rather than crash
+            continue
 
     return normalized
 
@@ -584,10 +678,42 @@ def _compute_offer_metrics(offer_or_normalized: Dict[str, Any]) -> Dict[str, Any
     - total_duration_minutes: int (lower is better)
     - total_connections: int (lower is better)
 
-    Accepts either a raw Amadeus offer or a normalized entry that contains `raw`.
+    Accepts either a raw Amadeus offer, a legacy normalized dict, or a FlightOfferModel.
     """
-    # Prefer computing from the normalized structure when available, per tool contract
-    # Fall back to raw Amadeus offer structure otherwise.
+    # Branch early if we received a Pydantic model
+    if hasattr(offer_or_normalized, "model_dump"):
+        # It is a FlightOfferModel (or similar)
+        model = offer_or_normalized  # type: ignore
+        price_amount = None
+        try:
+            if getattr(model, "min_amount", None) is not None:
+                price_amount = float(getattr(model, "min_amount"))
+        except Exception:
+            price_amount = None
+
+        total_connections = 0
+        total_duration_minutes = None
+        try:
+            total_connections = len(getattr(model, "segments", []))
+        except Exception:
+            total_connections = 0
+        try:
+            dep_dt = getattr(model, "scheduled_departure", None)
+            arr_dt = getattr(model, "scheduled_arrival", None)
+            if dep_dt and arr_dt:
+                total_duration_minutes = max(
+                    0, int((arr_dt - dep_dt).total_seconds() // 60)
+                )
+        except Exception:
+            total_duration_minutes = None
+
+        return {
+            "price_amount": price_amount,
+            "total_duration_minutes": total_duration_minutes,
+            "total_connections": total_connections,
+        }
+
+    # Fallback: original logic for dict inputs
     offer = offer_or_normalized.get("raw") or offer_or_normalized
 
     # Price
@@ -599,20 +725,16 @@ def _compute_offer_metrics(offer_or_normalized: Dict[str, Any]) -> Dict[str, Any
         )
     except Exception:
         try:
-            # Fallback to normalized min_amount
             if offer_or_normalized.get("min_amount") is not None:
                 price_amount = float(offer_or_normalized.get("min_amount"))
         except Exception:
             price_amount = None
 
-    # Duration and connections
     total_duration_minutes: Optional[int] = None
     total_connections = 0
 
-    # 1) If normalized fields exist, compute based on them
     if isinstance(offer_or_normalized.get("segments"), list):
         try:
-            # Per user requirement: number of connections obtained from len(segments)
             total_connections = len(offer_or_normalized.get("segments") or [])
         except Exception:
             total_connections = 0
@@ -629,19 +751,16 @@ def _compute_offer_metrics(offer_or_normalized: Dict[str, Any]) -> Dict[str, Any
         except Exception:
             total_duration_minutes = None
 
-    # 2) Otherwise, fall back to raw itineraries-based computation
     if total_duration_minutes is None and not total_connections:
         itineraries = offer.get("itineraries") or []
         if itineraries:
             accum_minutes = 0
             stops = 0
             for it in itineraries:
-                # Duration
                 dur = _parse_iso8601_duration_to_minutes(it.get("duration"))
                 if dur is not None:
                     accum_minutes += dur
                 else:
-                    # Fallback: compute from first departure to last arrival if timestamps exist
                     segs = it.get("segments") or []
                     if segs:
                         try:
@@ -654,10 +773,8 @@ def _compute_offer_metrics(offer_or_normalized: Dict[str, Any]) -> Dict[str, Any
                                     0, int((arr_dt - dep_dt).total_seconds() // 60)
                                 )
                         except Exception:
-                            # ignore
                             pass
 
-                # Connections (raw semantics: segments - 1 per itinerary)
                 segs = it.get("segments") or []
                 stops += max(0, len(segs) - 1)
 
@@ -741,7 +858,12 @@ def rank_flights(
             + w_dur * _inv_norm(m.get("total_duration_minutes"), d_min, d_max)
             + w_stops * _inv_norm(float(m.get("total_connections", 0)), s_min, s_max)
         )
-        ranked.append({"flight": flight, "score": float(score), "metrics": m})
+        # Ensure JSON-serializable output
+        if hasattr(flight, "model_dump"):
+            flight_out = flight.model_dump(mode="json")
+        else:
+            flight_out = flight
+        ranked.append({"flight": flight_out, "score": float(score), "metrics": m})
 
     ranked.sort(key=lambda x: x["score"], reverse=True)
     return ranked[: int(top_k)]
