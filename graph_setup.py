@@ -25,3 +25,14 @@ FLIGHT_SEARCH_AGENT = "flight_search_agent"
 
 FLIGHT_SEARCH_INVOKE_NODE = "flight_search_invoke_node"
 FLIGHT_SEARCH_HANDOFF_NODE = "flight_search_handoff_node"
+
+FD_BASELINE_ENTRY_NODE = "fd_baseline_entry_node"
+FD_BASELINE_AGENT = "fd_baseline_agent"
+FD_BASELINE_TOOL_HANDLER = "fd_baseline_tool_handler"
+FD_BASELINE_TOOL_NODE = "fd_baseline_tool_node"
+FD_RETURN_NODE = "fd_return_node"
+
+FD_DISCOVERY_ENTRY_NODE = "fd_discovery_entry_node"
+FD_DISCOVERY_AGENT = "fd_discovery_agent"
+FD_DISCOVERY_TOOL_HANDLER = "fd_discovery_tool_handler"
+FD_DISCOVERY_TOOL_NODE = "fd_discovery_tool_node"
