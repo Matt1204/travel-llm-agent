@@ -16,7 +16,7 @@ from amadeus_api import (
 from primary_assistant_chain import FDSnapshot, State, FDSessionInfo
 from langchain_core.runnables import RunnableConfig
 from graph_setup import FD_DISCOVERY_ENTRY_NODE, FD_RETURN_NODE
-
+from utils import chat_bot_print
 
 llm = ChatOpenAI(model="gpt-5-mini-2025-08-07")
 
@@ -119,7 +119,7 @@ def search_flight(
     flight = flight_ranked[0]["flight"] if flight_ranked else None
 
     if flight is None:
-        print(f"🔧 search_flight tool returning Command with 'No flight found'")
+        # print(f"🔧 search_flight tool returning Command with 'No flight found'")
         return {
             "flight_discovery_messages": [
                 ToolMessage(content="No flight found", tool_call_id=tool_call_id)
@@ -149,7 +149,7 @@ def search_flight(
         else ToolMessage(content="No flight found", tool_call_id=tool_call_id)
     )
 
-    print(f"🔧 search_flight tool returning Command with candidate ID: {snapshot_id}")
+    # print(f"🔧 search_flight tool returning Command with candidate ID: {snapshot_id}")
     return {
         "baseline_flight_candidates": [candidate],
         "flight_discovery_messages": [tool_message],
@@ -330,34 +330,11 @@ def finalize_baseline(
 
     new_fd_session_info = FDSessionInfo(baseline=baseline_snapshot)
 
-    # Save the completed baseline state to MongoDB for future debugging
-    try:
-        # Create the updated state that would be returned
-        updated_state = {
-            **state,  # Current state
-            "fd_session_info": new_fd_session_info,
-            "flight_discovery_messages": state.get("flight_discovery_messages", [])
-            + [
-                ToolMessage(
-                    content="Flight discovery process finished with best flight: "
-                    + str(baseline_snapshot.get("id")),
-                    tool_call_id=tool_call_id,
-                )
-            ],
-        }
-
-        # saved_state_id = save_baseline_completed_state(
-        #     updated_state,
-        #     config,
-        #     f"Baseline completed - Flight {baseline_snapshot.get('id')} selected",
-        # )
-        # print(f"!!!!!!!!! 💾 State saved with ID: {saved_state_id}")
-
-    except Exception as e:
-        print(f"⚠️  Failed to save baseline state: {e}")
-        # Continue execution even if saving fails
-
-    print(f"🔧 finalize_baseline tool returning Command with updated fd_session_info")
+    # print(f"🔧 finalize_baseline tool returning Command with updated fd_session_info")
+    chat_bot_print(
+        "Flight discovery stage finished. Start discovery stage.",
+        is_human_msg=False,
+    )
     return Command(
         update={
             "fd_session_info": new_fd_session_info,
@@ -431,8 +408,7 @@ def worker_complete_or_escalate(
 
 baseline_tools = [
     search_flight,
-    worker_complete_or_escalate,
+    WorkerCompleteOrEscalate,
     finalize_baseline,
-    worker_complete_or_escalate,
 ]
 flight_discovery_chain = fd_baseline_prompt | llm.bind_tools(baseline_tools)

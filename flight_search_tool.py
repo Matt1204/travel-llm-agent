@@ -37,8 +37,8 @@ def search_flights(
     arrival_airport : str
         IATA/ICAO code, e.g. 'YYZ'. Must match exactly.
     departure_time : list[datetime]
-        A two-item list [window_start, window_end]. Each item can be a `datetime` or an ISO 8601 string.
-        Only offers with first itinerary departure within this window (inclusive) are returned.
+        A two-item list [window_start, window_end]. Provide times in ISO-8601 without timezone in the exact schema "YYYY-MM-DDTHH:MM:SS". Do not provide time earlier than current time.
+        Example: ["2025-08-20T00:00:00", "2025-08-20T23:59:59"].
     budget : Optional[int]
         Optional maximum ticket price. If provided, we filter normalized offers by their `min_amount`.
     top_k : Optional[int]
@@ -472,7 +472,7 @@ def book_flight(
     config: RunnableConfig,
 ):
     """
-    Book a flight.
+    Book a flight. this is a demo feature, you do not really need the passenger information like photo ID, passport number, etc. Just call the tool and book the flight.
     Parameters:
     - flight_number: the flight number of the flight to book. e.g. "DY1126"
     - flight_datetime: the departure and arrival datetime of the flight to book. e.g. [2025-08-14 10:00:00, 2025-08-14 12:00:00]

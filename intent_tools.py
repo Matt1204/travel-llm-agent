@@ -16,8 +16,9 @@ import json
 from langgraph.graph.message import AnyMessage, add_messages
 from graph_setup import PRIMARY_ASSISTANT
 from primary_assistant_chain import State
-# add this helper near the imports
 
+# add this helper near the imports
+from amadeus_api import get_amadeus_client
 
 # def _replace_req(old, new):
 #     return new
@@ -28,6 +29,87 @@ from primary_assistant_chain import State
 #     requirement_id: NotRequired[str] = ""
 #     test_counter: NotRequired[int] = 0
 
+
+@tool
+def discover_nearest_airports_for_city(
+    city_keyword: str,
+    *,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+):
+    """
+    Given a keyword of city or airport, return 1) airport related to the keyword. 2) the top 5 nearest airports around it.
+    Use this tool to get information(IATA code) about an airport.
+    Parameters:
+    city_keyword: str
+        A keyword of city or airport. for example: "Toronto", "Billy Bishop".
+
+    Return: a dict with keys: {"airport_found": {...}, "airports_nearby": [...]}
+    """
+    client = get_amadeus_client()
+    # 1) Find airports related to city
+    airports = client.airport_search(keyword=city_keyword, limit=50)
+    if not airports:
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=f"No airports found for: {city_keyword}",
+                        tool_call_id=tool_call_id,
+                    )
+                ]
+            }
+        )
+
+    # Filter to those in the exact city if we can infer city name match; otherwise keep all
+    # Choose 'biggest' by travelers_score desc, fallback by presence
+    def _score(a):
+        s = a.get("travelers_score")
+        return -int(s) if isinstance(s, (int, float)) else 0
+
+    city_airports = sorted(airports, key=_score)
+    base_airport = city_airports[0]
+
+    base_lat = base_airport.get("latitude")
+    base_lon = base_airport.get("longitude")
+    if base_lat is None or base_lon is None:
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=f"Benchmark airport lacks coordinates: {base_airport}",
+                        tool_call_id=tool_call_id,
+                    )
+                ]
+            }
+        )
+
+    # 2) Nearest airports by flights score, limit 5
+    nearest = client.nearest_airport_search(
+        latitude=float(base_lat),
+        longitude=float(base_lon),
+        limit=5,
+        radius_km=150,
+        # sort="analytics.flights.score",
+    )
+    nearest_sorted = sorted(nearest, key=_score)
+    nearest_sorted = [
+        a for a in nearest_sorted if a.get("iata_code") != base_airport.get("iata_code")
+    ]
+
+    payload = {
+        "city_keyword": city_keyword,
+        "airport_found": base_airport,
+        "airports_nearby": nearest_sorted,
+    }
+    return Command(
+        update={
+            "messages": [
+                ToolMessage(content=json.dumps(payload), tool_call_id=tool_call_id)
+            ]
+        }
+    )
+
+
 def IntentElicitCompleteOrEscalate(
     cancel: bool,
     reason: str,
@@ -36,14 +118,15 @@ def IntentElicitCompleteOrEscalate(
     state: Annotated[State, InjectedState],
     config: RunnableConfig,
 ) -> Command:
-    """A tool to mark the current task as completed and/or to escalate control of the dialog to the primary assistant,
-    who can re-route the dialog based on the user's needs.
-    You must call this tool when you have completed the current task.
+    """A tool to mark the current task as completed(sync_flight_requirements_to_db called, requirement saved to database) and/or to escalate control of the dialog to the primary assistant if user request is beyond your scope(e.g user abandon current task).
+    Do not call this tool if you have not saved the requirements to the database or user request is within your scope, just keep assisting user.
     example 1: "cancel": True, "reason": "User changed their mind about the current task.",
     example 2: "cancel": True, "reason": "I have fully completed the task: <task_description>",
     example 3: "cancel": False, "reason": "I need to search the user's emails or calendar for more information.",
     """
-    print("HIIITTTT IntentElicitCompleteOrEscalate called. intent agent => primary assistant")
+    print(
+        "HIIITTTT IntentElicitCompleteOrEscalate called. intent agent => primary assistant"
+    )
     return Command(
         goto=PRIMARY_ASSISTANT,
         update={
@@ -56,8 +139,9 @@ def IntentElicitCompleteOrEscalate(
                 )
             ],
             "dialog_state": ["pop"],
-        }
+        },
     )
+
 
 @tool
 def add_departure_airport_priority(
@@ -126,7 +210,8 @@ def add_departure_time_priority(
 ) -> Command:
     """Add a departure time window with priority level to the FlightRequirements object. Note: change not applied to database.
     priority: the priority level to add. e.g. 1(highest), 2, 3, 4
-    value: the departure time window, to add. e.g. [datetime(2025, 8, 1, 10, 0), datetime(2025, 8, 2, 20, 0)]
+    value: the departure time window to add. Provide times in ISO-8601 without timezone in the exact schema "YYYY-MM-DDTHH:MM:SS".
+    Example: ["2025-08-20T00:00:00", "2025-08-20T23:59:59"].
     """
     current_req = state.get("flight_requirements", FlightRequirements())
     current_req.add_requirement_priority("departure_time", priority, value)
@@ -146,7 +231,7 @@ def add_departure_time_priority(
 @tool
 def add_budget_priority(
     priority: int,
-    value: list[int]=[0, 999999],
+    value: list[int] = [0, 999999],
     *,
     tool_call_id: Annotated[str, InjectedToolCallId],
     state: Annotated[State, InjectedState],
@@ -240,7 +325,9 @@ def update_departure_time_priority(
     config: RunnableConfig,
 ) -> Command:
     """Update the departure time window at a given priority level.
-    value must be a list of two datetimes: [start, end].
+    priority: 1 (highest) .. 4
+    value: the departure time window to update. Provide times in ISO-8601 without timezone in the exact schema "YYYY-MM-DDTHH:MM:SS".
+    Example: ["2025-08-20T00:00:00", "2025-08-20T23:59:59"].
     Note: change not applied to database, only update the FlightRequirements object.
     """
     current_req = state.get("flight_requirements", FlightRequirements())
@@ -261,7 +348,7 @@ def update_departure_time_priority(
 @tool
 def update_budget_priority(
     priority: int,
-    value: list[int]=[0, 999999],
+    value: list[int] = [0, 999999],
     *,
     tool_call_id: Annotated[str, InjectedToolCallId],
     state: Annotated[State, InjectedState],

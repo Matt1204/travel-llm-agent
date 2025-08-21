@@ -19,7 +19,9 @@ from amadeus_api import (
     normalize_offers_for_tool,
     rank_flights,
 )
+from utils import chat_bot_print
 
+# llm = ChatOpenAI(model="gpt-5-mini-2025-08-07")
 llm = ChatOpenAI(model="gpt-5-mini-2025-08-07")
 
 
@@ -106,15 +108,19 @@ fd_discovery_prompt = ChatPromptTemplate.from_messages(
             "step 1: recommend new filter values and search for flights by calling 'update_filter_and_search_flight' with your proposed filter values, after this, <current_flight_snapshot> will be updated with the filter you proposed(filter_used), and flights(if any) found.\n"
             "To propose a new filter: Use your common sense + analysis of comments from previous search snapshot, propose a new filter that is likely to find a cheaper flight than baseline flight.\n"
             "For example, if the baseline filter's departure_time is today, then you may suggest changing the departure_time to a day in the future, since flights departing further ahead may be priced lower than near-term departures.\n"
-            "For example, if the baseline filter's departure_airport is a small airport, then you may suggest changing the departure_airport to a large hub airport nearby, since flights departing from larger airports may be priced lower than small airports.\n"
+            "For example, if the baseline filter's departure_airport/arrival_airport is a small airport, then you may suggest changing the departure_airport/arrival_airport to a large hub airport nearby, since flights departing from larger airports may be priced lower than small airports.\n"
             "For example, if you discovered from orevious searches that you are not getting any flights by updating the departure_time, then you may suggest changing the airport\n"
             "Step 2: evaluate the new flights found and filter used; with filter proposed and flights searched, review them. Call 'evaluate_flight', and provide a thoughts on the <current_flight_snapshot>, this comment will be used as a guidance for future search attempt.\n"
             "Repeating step 1 and step 2, until you are told to stop.\n"
             "Rules:\n"
-            "- You should suggest new filter value(s) that is likely to find a cheaper flight than baseline flight. "
+            "- You should suggest new filter value(s) that is likely to find a cheaper flight than baseline flight."
+            "- Searching should be persistent. Expand your query bounds if the first search returns no results."
+            "- Keep trying in same direction(e.g expanding departure_time windows) at least 3 times before working on other directions.(e.g. changin deaprture airport)"
+            "- once you have successfully found cheaper flights for 2 times in the same direction(e.g. expanding departure_time windows), you must change the direction to keep searching(e.g. changing departure_airport/arrival_airport)\n"
             "- When proposing new filter, start by making small changes to the baseline filter, and then gradually increase the changes to find a cheaper flight. For example, start by only changing 1 filter value, and then gradually increase the changes to find a cheaper flight.\n"
             "- When reviewing the current_flight_snapshot, you should 1) generate yout reflection and insights on the <current_flight_snapshot>, 2) give advice on how to improve the filter to find a cheaper flight, do not propose filter value directly, just give general guidanve on the direction to improve the filter. \n"
-            "- You do not need to present the flight candidates to user, just keep searching flights until you have found the best flight.\n",
+            "- You do not need to present the flight candidates to user, just keep searching\n"
+            "- When you want to serach new airports, always use 'discover_nearest_airports_for_city' tool to confirm the exact airport info before using it in your filter.\n",
         ),
         ("placeholder", "{flight_discovery_messages}"),
     ]
@@ -144,10 +150,14 @@ def update_filter_and_search_flight(
     reason: str
         A short and concise reason on why you are proposing this filter.
     """
-    print(
-        f"----update_filter_and_search_flight: {departure_airport} {arrival_airport} {departure_time} {budget}----"
+    # print(
+    #     f"----update_filter_and_search_flight: {departure_airport} {arrival_airport} {departure_time} {budget}----"
+    # )
+    # print(f" -- {why_this_filter} --")
+    chat_bot_print(
+        f"Attempt:\n {why_this_filter}",
+        is_human_msg=False,
     )
-    print(f" -- {why_this_filter} --")
     session_info = state.get("fd_session_info") or {}
     system_discovered = session_info.get("system_discovered") or []
     cur_snapshot = system_discovered[-1]
@@ -248,6 +258,91 @@ def update_filter_and_search_flight(
 
 
 @tool
+def discover_nearest_airports_for_city(
+    city_keyword: str,
+    *,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+):
+    """
+    Given a keyword of city or airport, return 1) airport related to the keyword. 2) the top 5 nearest airports around it.
+    Use this tool to get information(IATA code) about an airport.
+    Parameters:
+    city_keyword: str
+        A keyword of city or airport. for example: "Toronto", "Billy Bishop".
+
+    Return: a dict with keys: {"airport_found": {...}, "airports_nearby": [...]}
+    """
+    client = get_amadeus_client()
+    # 1) Find airports related to city
+    airports = client.airport_search(keyword=city_keyword, limit=50)
+    if not airports:
+        return Command(
+            update={
+                "flight_discovery_messages": [
+                    ToolMessage(
+                        content=f"No airports found for: {city_keyword}",
+                        tool_call_id=tool_call_id,
+                    )
+                ]
+            }
+        )
+
+    # Filter to those in the exact city if we can infer city name match; otherwise keep all
+    # Choose 'biggest' by travelers_score desc, fallback by presence
+    def _score(a):
+        s = a.get("travelers_score")
+        return -int(s) if isinstance(s, (int, float)) else 0
+
+    city_airports = sorted(airports, key=_score)
+    base_airport = city_airports[0]
+
+    base_lat = base_airport.get("latitude")
+    base_lon = base_airport.get("longitude")
+    if base_lat is None or base_lon is None:
+        return Command(
+            update={
+                "flight_discovery_messages": [
+                    ToolMessage(
+                        content=f"Benchmark airport lacks coordinates: {base_airport}",
+                        tool_call_id=tool_call_id,
+                    )
+                ]
+            }
+        )
+
+    # 2) Nearest airports by flights score, limit 5
+    nearest = client.nearest_airport_search(
+        latitude=float(base_lat),
+        longitude=float(base_lon),
+        limit=5,
+        radius_km=150,
+        # sort="analytics.flights.score",
+    )
+    nearest_sorted = sorted(nearest, key=_score)
+    nearest_sorted = [
+        a for a in nearest_sorted if a.get("iata_code") != base_airport.get("iata_code")
+    ]
+
+    payload = {
+        "city_keyword": city_keyword,
+        "airport_found": base_airport,
+        "airports_nearby": nearest_sorted,
+    }
+    return Command(
+        update={
+            "flight_discovery_messages": [
+                ToolMessage(content=json.dumps(payload), tool_call_id=tool_call_id)
+            ]
+        }
+    )
+
+
+# discover_nearest_airports_for_city.invoke(
+#     {"city_keyword": "billy bishop", "tool_call_id": "manual-run-1"}
+# )
+
+
+@tool
 def evaluate_flight(
     snapshot_id: str,
     comment: str,
@@ -265,7 +360,8 @@ def evaluate_flight(
     comment: str
         A comment on the current_flight_snapshot.
     """
-    print(f"----evaluate_flight: {snapshot_id}----")
+    # print(f"----evaluate_flight: {snapshot_id}----")
+    chat_bot_print(f"Reflection: {comment}", is_human_msg=False)
     session_info = state.get("fd_session_info") or {}
     system_discovered = session_info.get("system_discovered") or []
     cur_snapshot = system_discovered[-1]
@@ -302,8 +398,10 @@ def evaluate_flight(
 
 fd_discovery_tools = [
     update_filter_and_search_flight,
+    discover_nearest_airports_for_city,
     evaluate_flight,
     WorkerCompleteOrEscalate,
+    discover_nearest_airports_for_city,
 ]
 fd_discovery_chain = (
     fd_prompt_inputs | fd_discovery_prompt | llm.bind_tools(fd_discovery_tools)
