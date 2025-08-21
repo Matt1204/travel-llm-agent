@@ -397,6 +397,141 @@ class AmadeusClient:
             }
         return resp.json()
 
+    # ----------------------
+    # Airport & City Search (GET)
+    # ----------------------
+    def airport_search(
+        self,
+        keyword: str,
+        *,
+        country_code: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Search airports and cities by keyword, and return ONLY trimmed airport entries.
+
+        Endpoint: GET /v1/reference-data/locations?subType=CITY,AIRPORT&keyword=...
+        See docs/airport_search.json
+        """
+        params: Dict[str, Any] = {
+            "subType": "CITY,AIRPORT",
+            "keyword": keyword,
+            "view": "FULL",
+        }
+        if country_code:
+            params["countryCode"] = country_code
+        if limit is not None:
+            params["page[limit]"] = int(limit)
+
+        url = f"{self.base_url}/v1/reference-data/locations"
+        resp = self._make_request_with_retry(
+            "GET",
+            url,
+            headers=self._auth_headers(),
+            params=params,
+            timeout=self._timeout,
+        )
+        if resp.status_code >= 400:
+            return []
+        payload = resp.json() or {}
+        items = (payload.get("data") or [])
+
+        def _safe_get(d: Dict[str, Any], *keys: str) -> Any:
+            cur: Any = d
+            for k in keys:
+                if not isinstance(cur, dict):
+                    return None
+                cur = cur.get(k)
+            return cur
+
+        trimmed: List[Dict[str, Any]] = []
+        for it in items:
+            if str(it.get("subType", "")).upper() != "AIRPORT":
+                continue
+            trimmed.append(
+                {
+                    "iata_code": it.get("iataCode"),
+                    "name": it.get("name"),
+                    "detailed_name": it.get("detailedName"),
+                    "city_name": _safe_get(it, "address", "cityName"),
+                    "city_code": _safe_get(it, "address", "cityCode"),
+                    "latitude": _safe_get(it, "geoCode", "latitude"),
+                    "longitude": _safe_get(it, "geoCode", "longitude"),
+                    "travelers_score": _safe_get(it, "analytics", "travelers", "score"),
+                }
+            )
+
+        return trimmed
+
+    # ----------------------
+    # Nearest Airports (GET)
+    # ----------------------
+    def nearest_airport_search(
+        self,
+        latitude: float,
+        longitude: float,
+        *,
+        radius_km: Optional[int] = None,
+        limit: int = 5,
+        sort: str = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Find nearest relevant airports around a given coordinate.
+
+        Endpoint: GET /v1/reference-data/locations/airports?latitude=..&longitude=..
+        See docs/nearest_airport.json
+        """
+        params: Dict[str, Any] = {
+            "latitude": float(latitude),
+            "longitude": float(longitude),
+            "page[limit]": int(limit),
+        }
+        if sort is not None:
+            params["sort"] = sort
+        if radius_km is not None:
+            params["radius"] = int(radius_km)
+
+        url = f"{self.base_url}/v1/reference-data/locations/airports"
+        resp = self._make_request_with_retry(
+            "GET",
+            url,
+            headers=self._auth_headers(),
+            params=params,
+            timeout=self._timeout,
+        )
+        if resp.status_code >= 400:
+            return []
+        payload = resp.json() or {}
+        items = (payload.get("data") or [])
+
+        def _safe_get(d: Dict[str, Any], *keys: str) -> Any:
+            cur: Any = d
+            for k in keys:
+                if not isinstance(cur, dict):
+                    return None
+                cur = cur.get(k)
+            return cur
+
+        trimmed: List[Dict[str, Any]] = []
+        for it in items:
+            trimmed.append(
+                {
+                    "iata_code": it.get("iataCode"),
+                    "name": it.get("name"),
+                    "city_name": _safe_get(it, "address", "cityName"),
+                    "city_code": _safe_get(it, "address", "cityCode"),
+                    "latitude": _safe_get(it, "geoCode", "latitude"),
+                    "longitude": _safe_get(it, "geoCode", "longitude"),
+                    "distance_km": _safe_get(it, "distance", "value"),
+                    "flights_score": _safe_get(it, "analytics", "flights", "score"),
+                    "travelers_score": _safe_get(it, "analytics", "travelers", "score"),
+                }
+            )
+
+        # Ensure sorted by flights score descending if available
+        trimmed.sort(key=lambda x: (x.get("flights_score") is None, -(x.get("flights_score") or 0)))
+        return trimmed[: int(limit)]
+
 
 
 def select_highest_priority(requirement_obj: Any) -> Optional[Any]:

@@ -28,7 +28,6 @@ import sqlite3
 from intent_tools import IntentElicitCompleteOrEscalate
 from graph_setup import INTENT_ENTRY_NODE, INTENT_AGENT
 from primary_assistant_chain import State
-
 from intent_tools import (
     add_departure_airport_priority,
     add_arrival_airport_priority,
@@ -41,6 +40,7 @@ from intent_tools import (
     remove_requirement_priority,
     # IntentElicitationState,
     sync_flight_requirements_to_db,
+    discover_nearest_airports_for_city,
 )
 
 checkpointer = InMemorySaver()
@@ -62,11 +62,13 @@ req_creation_prompt = ChatPromptTemplate.from_messages(
             "Current FlightRequirements:\n{flight_requirements}\n"
             "Current time: {time}\n\n"
             "Rules:\n"
-            "- You MUST call 'IntentElicitCompleteOrEscalate' when you completed current task(e.g sync_flight_requirements_to_db called), or/and you need help from primary assistant(e.g user abandon the task)."
+            "- You should call 'IntentElicitCompleteOrEscalate' ONLY after you have saved the requirements to the database(e.g sync_flight_requirements_to_db called), or user request is beyond your scope(e.g user abandon current task). Otherwise, you should continue to assist user to elicit their flight requirement.\n"
+            "- <FlightRequirements> is your only source of truth. It is the only correct and up-to-date FlightRequirements you should refer to. You should not make up any information or values.\n"
             "- You are only allowed to assist user to elicit their flight requirement specified in FlightRequirements. You should not offer to help with any other things.\n"
             "- You must update the FlightRequirements with the tool once user provide any new information. Do not make up values. do not waste the user's time.\n"
             "- proactively ask user to confirm new information. e.g If user only specifies the city of departure, you will ask user to confirm the airport and IATA/ICAO code.\n"
             "- Only ask for fields defined in FlightRequirements.\n"
+            "- when you create/update field, you should actively respond user with a summary of current up-to-date FlightRequirements.\n"
             "- you should not skip any priority level, if you only see a value in priority_1, next priority level should be priority_2. there are at most 4 priority levels.\n"
             "- Do not explain 'priority' using 'priority_1' or 'priority_2'. Use keywords like 'most prefered' or 'most desired'.\n"
             "- You MUST NOT answer any user input that is irrelevant to the elicitation of flight ticket search. e.g. if the user says 'how is the weather today?', you MUST politely refuse to answer it and direct the user to flight ticket requirements.\n"
@@ -89,14 +91,16 @@ req_update_prompt = ChatPromptTemplate.from_messages(
             "step 1: read to user the current requirements and ask them what changes to make."
             "step 2: modify the FlightRequirements via appropriate tools."
             "step 3: When complete, read back the requirements and ask user to explicitly confirm the modifications by using keyword 'confirm'.\n"
-            "Current FlightRequirements:\n{flight_requirements}\n"
+            "Current FlightRequirements:\n<FlightRequirements>\n{flight_requirements}\n</FlightRequirements>\n"
             "Current time: {time}\n\n"
             "Rules:\n"
-            "- You MUST call 'IntentElicitCompleteOrEscalate' when you completed current task, or/and you need help from primary assistant."
+            "- You should call 'IntentElicitCompleteOrEscalate' ONLY after you have saved the requirements to the database(e.g sync_flight_requirements_to_db called), or user request is beyond your scope(e.g user abandon current task). Otherwise, you should continue to assist user to elicit their flight requirement.\n"
+            "- <FlightRequirements> is your only source of truth. It is the only correct and up-to-date FlightRequirements you should refer to. You should not make up any information or values.\n"
             "- You are only allowed to assist user to elicit their flight requirement specified in FlightRequirements. You should not offer to help with any other things.\n"
             "- You must update the FlightRequirements with the tool once user provide any new information. Do not make up values. do not waste the user's time.\n"
             "- proactively ask user to confirm new information. e.g If user only specifies the city of departure, you will ask user to confirm the airport and IATA/ICAO code.\n"
             "- Only ask for fields defined in FlightRequirements.\n"
+            "- when you update field, you should actively respond user with a summary of current up-to-date FlightRequirements.\n"
             "- you should not skip any priority level, if you only see a value in priority_1, next priority level should be priority_2. there are at most 4 priority levels.\n"
             "- Do not explain 'priority' using 'priority_1' or 'priority_2'. Use keywords like 'most prefered' or 'most desired'.\n"
             "- You MUST NOT answer any user input that is irrelevant to the elicitation of flight ticket search. e.g. if the user says 'how is the weather today?', you MUST politely refuse to answer it and direct the user to flight ticket requirements.\n"
@@ -162,16 +166,16 @@ def load_flight_requirements_from_db(
 
 def intent_entry_node(state: State, config: RunnableConfig):
     """Fetch the flight requirements from the database."""
-    print("intent_entry_node !!!!!!!!!!!!!!")
+    # print("intent_entry_node !!!!!!!!!!!!!!")
 
     requirement_id = state.get("requirement_id", "")
     flight_requirements = state.get("flight_requirements", None)
     # test_counter = state.get("test_counter", 0)
     # print(f"!!!!!!!!!! test_counter: {test_counter} !!!!!!!!!!!")
-    if flight_requirements is not None:
-        print(f"flight_requirements: {flight_requirements.to_json()} !!!!!!!!!!!")
-    else:
-        print("flight_requirements is None !!!!!!!!!!!")
+    # if flight_requirements is not None:
+    #     print(f"flight_requirements: {flight_requirements.to_json()} !!!!!!!!!!!")
+    # else:
+    #     print("flight_requirements is None !!!!!!!!!!!")
     if requirement_id == "" or requirement_id is None:
         # Create, Initialization
         if flight_requirements is None:
@@ -221,10 +225,12 @@ tools = [
     remove_requirement_priority,
     sync_flight_requirements_to_db,
     IntentElicitCompleteOrEscalate,
+    discover_nearest_airports_for_city,
 ]
 
 # llm = ChatTongyi(model="qwen-max", temperature=0.1)
-llm = ChatOpenAI(model="gpt-4.1-2025-04-14", temperature=0.1)
+# llm = ChatOpenAI(model="gpt-5-mini-2025-08-07")
+llm = ChatOpenAI(model="gpt-5-2025-08-07")
 
 intent_elicitation_agent = create_react_agent(
     model=llm,
@@ -232,6 +238,7 @@ intent_elicitation_agent = create_react_agent(
     prompt=runtime_prompt,
     state_schema=State,
 )
+
 
 # ---------------------------------------------------------------------------
 # 6. Compose overall graph – Router → Worker(s) → END
@@ -244,6 +251,7 @@ def register_intent_graph(builder: StateGraph):
     builder.add_edge(INTENT_ENTRY_NODE, INTENT_AGENT)
 
     builder.add_edge(INTENT_AGENT, END)
+
 
 # # ---------------------------------------------------------------------------
 # # 7. Quick test‑drive (optional)

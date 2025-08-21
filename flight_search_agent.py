@@ -64,7 +64,7 @@ flight_search_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are a flight‑search assistant. Using the user's FlightRequirements as filter criteria, find flights that satisfy their needs. And help user book the flight.\n"
+            "You are the flight search agent. Using the user's FlightRequirements as filter criteria, find flights that satisfy their needs. And help user book the flight.\n"
             "Each search criteria in the FlightRequirements has requirement values labeled with priority levels(priority_1, priority_2), this priority level is used to determine a requirements value's importance/preference to user.\n"
             "Requirement with smaller number(e.g. priority_1) is user's most preferred/highest need. requirement with larger number(e.g. priority_4) is user's least preferred/lowest need.\n"
             "Flight Search Process:\n"
@@ -120,7 +120,7 @@ def register_flight_search_graph(builder: StateGraph):
     builder.add_node(FLIGHT_SEARCH_ENTRY_NODE, flight_search_entry_node)
     builder.add_node(FLIGHT_SEARCH_AGENT, flight_search_agent)
 
-    builder.add_edge(START, FLIGHT_SEARCH_ENTRY_NODE)
+    # builder.add_edge(START, FLIGHT_SEARCH_ENTRY_NODE)
     builder.add_edge(FLIGHT_SEARCH_ENTRY_NODE, FLIGHT_SEARCH_AGENT)
     builder.add_edge(FLIGHT_SEARCH_AGENT, END)
 
