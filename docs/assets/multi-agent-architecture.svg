@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="650" viewBox="0 0 1200 650" role="img" aria-labelledby="title desc">
+  <title id="title">Travel LLM Agent multi-agent orchestration</title>
+  <desc id="desc">A user request reaches one primary agent, which collaborates bidirectionally with requirement, flight search, and discovery sub-agents.</desc>
+
+  <defs>
+    <style>
+      .title { font: 700 28px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2328; }
+      .label { font: 700 22px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2328; }
+      .body { font: 400 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #57606a; }
+      .group-label { font: 600 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #57606a; letter-spacing: 0.4px; }
+      .connector { fill: none; stroke: #57606a; stroke-width: 2.5; }
+      .arrowhead { fill: #57606a; }
+      .box { stroke-width: 2; rx: 14; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="650" fill="#ffffff"/>
+  <text x="600" y="42" text-anchor="middle" class="title">One Primary Agent, Specialized Sub-Agents</text>
+
+  <rect x="440" y="72" width="320" height="74" class="box" fill="#f6f8fa" stroke="#afb8c1"/>
+  <text x="600" y="105" text-anchor="middle" class="label">User Request</text>
+  <text x="600" y="130" text-anchor="middle" class="body">Natural-language travel goal</text>
+
+  <path d="M 600 146 L 600 190" class="connector"/>
+  <polygon points="600,195 594,183 606,183" class="arrowhead"/>
+
+  <rect x="385" y="195" width="430" height="100" class="box" fill="#eef1f4" stroke="#57606a"/>
+  <text x="600" y="235" text-anchor="middle" class="label">Primary Agent</text>
+  <text x="600" y="265" text-anchor="middle" class="body">Understand · plan · delegate</text>
+
+  <rect x="55" y="340" width="1090" height="270" rx="18" fill="#f6f8fa" stroke="#d0d7de" stroke-width="2"/>
+  <text x="85" y="374" class="group-label">SPECIALIZED SUB-AGENTS</text>
+
+  <path d="M 480 295 L 270 407" class="connector"/>
+  <polygon points="480,295 472.2,305.9 466.6,295.3" class="arrowhead"/>
+  <polygon points="270,407 277.8,396.1 283.4,406.7" class="arrowhead"/>
+
+  <path d="M 600 295 L 600 407" class="connector"/>
+  <polygon points="600,295 594,307 606,307" class="arrowhead"/>
+  <polygon points="600,407 594,395 606,395" class="arrowhead"/>
+
+  <path d="M 720 295 L 930 407" class="connector"/>
+  <polygon points="720,295 733.4,295.3 727.8,305.9" class="arrowhead"/>
+  <polygon points="930,407 916.6,406.7 922.2,396.1" class="arrowhead"/>
+
+  <rect x="100" y="412" width="270" height="154" class="box" fill="#ffffff" stroke="#8c959f"/>
+  <text x="235" y="451" text-anchor="middle" class="label">Requirements Agent</text>
+  <text x="235" y="485" text-anchor="middle" class="body">Clarify preferences</text>
+  <text x="235" y="512" text-anchor="middle" class="body">Build structured requirements</text>
+  <text x="235" y="539" text-anchor="middle" class="body">Confirm before persistence</text>
+
+  <rect x="465" y="412" width="270" height="154" class="box" fill="#ffffff" stroke="#8c959f"/>
+  <text x="600" y="451" text-anchor="middle" class="label">Flight Search Agent</text>
+  <text x="600" y="485" text-anchor="middle" class="body">Search and compare options</text>
+  <text x="600" y="512" text-anchor="middle" class="body">Reprice selected flights</text>
+  <text x="600" y="539" text-anchor="middle" class="body">Return ranked results</text>
+
+  <rect x="830" y="412" width="270" height="154" class="box" fill="#ffffff" stroke="#8c959f"/>
+  <text x="965" y="451" text-anchor="middle" class="label">Discovery Agent</text>
+  <text x="965" y="485" text-anchor="middle" class="body">Explore alternatives</text>
+  <text x="965" y="512" text-anchor="middle" class="body">Reflect on each result</text>
+  <text x="965" y="539" text-anchor="middle" class="body">Adapt the next action</text>
+
+</svg>
