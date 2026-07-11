@@ -103,31 +103,32 @@ The repository also contains taxi and legacy booked-flight tools as examples of 
 ## 6. Code Map
 
 ```text
-graph.py / graph_setup.py
-  Supervisor topology, routing, worker handoffs, and checkpoints
+main.py                         Terminal entry point
 
-primary_assistant_chain.py / primary_assistant_tools.py
-  Shared state, supervisor policy, typed handoffs, and passenger reads
+travel_llm_agent/
+├── orchestration/              Supervisor graph, shared state, routing, and handoffs
+├── agents/
+│   ├── requirements/           Requirement elicitation and validated schemas
+│   ├── flight_search/          Interactive search, repricing, and booking
+│   ├── discovery/              Baseline and reflection-driven exploration
+│   ├── taxi/                   Taxi-management extension
+│   └── booked_flights/         Legacy booked-flight extension
+├── integrations/               Amadeus API adapter
+├── domain/                     Normalized flight-offer models
+├── persistence/                SQLite configuration and helpers
+├── shared/                     Console and reusable graph utilities
+└── legacy/                     Earlier orchestration experiments
 
-intent.py / intent_model.py / intent_tools.py
-  Requirement elicitation, Pydantic models, validation, and persistence
-
-flight_search_agent.py / flight_search_tool.py
-  Interactive search, ranking, repricing, and booking workflow
-
-flight_discovery_agent.py / fd_baseline_chain.py
-fd_discovery_chain.py / fd_discovery_graph.py
-  Baseline construction and reflection-driven iterative discovery
-
-amadeus_api.py / flight_model.py
-  External provider adapter and normalized offer contracts
+examples/                       Standalone supervisor example
+scripts/                        Database preparation utilities
+docs/                           Guides, API examples, architecture assets, and specs
 ```
 
 ## 7. Running the Learning Prototype
 
 ### 7.1 Prerequisites
 
-- Python with the dependencies pinned in `requirement.txt`
+- Python with the dependencies pinned in `requirements.txt`
 - `OPENAI_API_KEY`
 - Either an Amadeus bearer token or Amadeus client credentials
 - A compatible local `llm-agent-db.db` containing the travel and application tables used by the tools
@@ -140,7 +141,7 @@ cd travel-llm-agent
 
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirement.txt
+pip install -r requirements.txt
 
 export OPENAI_API_KEY="..."
 export AMADEUS_CLIENT_ID="..."

@@ -2,10 +2,10 @@ import uuid
 import textwrap
 from datetime import datetime
 
-# from graph_1 import graph
-from graph import graph
+# from travel_llm_agent.legacy.graph_1 import graph
+from travel_llm_agent.orchestration.graph import graph
 from langgraph.types import Command
-from utils import chat_bot_print
+from travel_llm_agent.shared.utils import chat_bot_print
 
 
 def _print_new_messages_from_state(state, prev_counts):

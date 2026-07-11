@@ -55,7 +55,7 @@ All LLM nodes --> OpenAI Chat Completions through LangChain
 
 ### Runtime topology, scaling and deployment
 
-The default topology is one CLI process, one in-memory supervisor checkpointer, a separate in-memory flight-search checkpointer, one SQLite file (`llm-agent-db.db`), and outbound HTTPS sessions. The code is launched with `python main.py`; dependency versions are pinned in `requirement.txt`. There are no required containers or infrastructure manifests.
+The default topology is one CLI process, one in-memory supervisor checkpointer, a separate in-memory flight-search checkpointer, one SQLite file (`llm-agent-db.db`), and outbound HTTPS sessions. The code is launched with `python main.py`; dependency versions are pinned in `requirements.txt`. There are no required containers or infrastructure manifests.
 
 V1 scales vertically and by independent process, provided each process has an isolated or deliberately shared database and checkpoint policy. SQLite permits simple local concurrency but serializes writes. In-memory checkpoints bind continuity to a process. **Inferred v2 policy:** externalize checkpoints and relational persistence before horizontally scaling, use one logical conversation writer per `thread_id`, and apply bounded concurrency to outbound flight searches.
 
@@ -67,41 +67,41 @@ The modular-monolith design prioritizes traceable workflows and rapid evolution 
 
 ## 3. Complete Module Breakdown
 
-### CLI and presentation (`main.py`, `utils.py`)
+### CLI and presentation (`main.py`, `travel_llm_agent/shared/utils.py`)
 
 This module owns terminal interaction, thread creation, graph streaming, incremental message rendering and human resume input. Its public interface is the executable entry point; its internal interface is `graph.stream`, `graph.invoke(Command(resume=...))` and `graph.get_state`. It does not own conversational decisions or persistence. State is limited to per-message-list display counters. Errors while rendering fall back to safe text. Execution is synchronous and single-threaded. Its separation keeps UI concerns out of domain tools and enables replacement by an HTTP or web frontend.
 
-### Supervisor orchestration (`graph.py`, `graph_setup.py`)
+### Supervisor orchestration (`travel_llm_agent/orchestration/graph.py`, `travel_llm_agent/orchestration/graph_setup.py`)
 
 The supervisor owns graph topology, dispatch, worker handoff and aggregation of worker responses. `graph_setup.py` centralizes stable node identifiers. `fetch_user_info_node` loads passenger requirements, `decision_after_fetch_user_info` restores the active dialog mode, and `decision_after_primary_thought` routes declared tool calls. The flight-search adapter maps supervisor state to `FlightSearchState`, invokes the worker with the same runtime config, preserves a dedicated worker transcript, and maps handoff results back to the supervisor.
 
 Its input is the shared `State`; its output is a state delta or `Command` specifying a destination. It owns no durable business records. The compiled graph uses `MemorySaver`, so state persists strongly within a process and thread. Routing errors are converted into a corrective `ToolMessage`. Concurrency is serialized per synchronous graph invocation. Security relies on preserving the original `RunnableConfig` into tools and worker graphs.
 
-### Shared state and primary assistant (`primary_assistant_chain.py`)
+### Shared state and primary assistant (`travel_llm_agent/orchestration/primary_assistant_chain.py`)
 
 This module defines the canonical graph state, reducers and supervisor prompt. `State` partitions the public transcript, requirement aggregate, worker-specific transcripts, dialog stack, discovery snapshots and loop budget. `update_dialog_stack` implements push/pop semantics; message reducers append or explicitly reset worker histories; the requirement reducer replaces aggregates atomically. `Assistant` normalizes missing message lists, invokes the runnable with tracing config, and performs one corrective reprompt for an empty response.
 
 The primary assistant binds an OpenAI model to read tools and handoff schemas. It is responsible for task classification and natural-language continuity, not for directly changing requirements or booking records. Its performance is dominated by model latency and prompt size; specialized transcripts limit cross-worker context growth.
 
-### Primary tools and handoff contracts (`primary_assistant_tools.py`)
+### Primary tools and handoff contracts (`travel_llm_agent/orchestration/primary_assistant_tools.py`)
 
 This module owns passenger-scoped retrieval of flight requirements, discovered deals and booked flights, plus typed handoff contracts. Retrieval tools read SQLite and turn JSON columns into structured results. Handoff tools emit `Command` updates, add correlated `ToolMessage` acknowledgements, set `requirement_id`, update the dialog stack and route to specialist entry nodes. Pydantic classes such as `HandoffToFlightSearchAgent`, `HandoffToFlightDiscoveryAgent` and `WorkerCompleteOrEscalate` make LLM routing arguments explicit.
 
 The module does not perform live search. Parameterized SQL provides injection resistance, and passenger filters enforce record ownership on user-facing reads. Tool-call IDs preserve LangChain message protocol correlation.
 
-### Intent elicitation (`intent.py`, `intent_tools.py`, `intent_model.py`, `intent_assistant_chain.py`)
+### Intent elicitation (`travel_llm_agent/agents/requirements/`)
 
 The intent subsystem owns creation and refinement of a `FlightRequirements` aggregate. Its ReAct agent receives a runtime prompt that distinguishes create from update, loads existing requirements by ID, and uses granular tools to add, update or remove priority levels. Completion is explicit through `IntentElicitCompleteOrEscalate`; persistence occurs only through `sync_flight_requirements_to_db` after the conversation reaches a confirmed state.
 
 `FlightRequirements` contains `AirportRequirements`, `TimeRequirement` and `BudgetRequirement`, all extending `PriorityRequirement`. Pydantic validators normalize airport strings, ISO datetimes and numeric budget ranges. JSON serialization is the boundary representation. SQLite stores each requirement dimension as JSON alongside a UUID, passenger ID and concise description. The graph mutates one aggregate within a conversation and replaces it in state; the final database write is one transaction.
 
-### Interactive flight-search worker (`flight_search_agent.py`, `flight_search_tool.py`)
+### Interactive flight-search worker (`travel_llm_agent/agents/flight_search/`)
 
 This worker owns user-guided offer search and booking. Its entry node loads a requirement aggregate by `requirement_id`. A prebuilt ReAct graph receives a dedicated message list and tools for search, details, booking and supervisor handoff. Search applies exact endpoints, a two-value departure window, optional budget and grouped ranking. Detailed lookup searches candidate days, can filter carrier and flight number, and asks Amadeus to reprice the selected offer. Booking creates an application booking UUID and persists the priced offer JSON after checking passenger identity and required state.
 
 The worker does not edit the requirement aggregate. It communicates synchronously with Amadeus and SQLite. A `remaining_steps` field bounds tool loops. Its checkpointer is an `InMemorySaver`, and the supervisor separately retains the full worker message list.
 
-### Baseline and autonomous discovery (`flight_discovery_agent.py`, `fd_baseline_chain.py`, `fd_discovery_chain.py`, `fd_discovery_graph.py`)
+### Baseline and autonomous discovery (`travel_llm_agent/agents/discovery/`)
 
 The baseline subsystem converts the highest-priority requirement values into a canonical search filter, searches offers, evaluates candidates and finalizes a baseline snapshot. `FDSnapshot` records ID, filter, altered values, normalized flights, better-deal status and evaluation comment; `FDSessionInfo` owns one baseline plus discovered attempts.
 
@@ -109,17 +109,17 @@ The iterative discovery subsystem receives the baseline and repeatedly creates a
 
 The subsystem's loop is synchronous and stateful. Snapshots are the transaction boundary for reasoning; the session database write is a batch commit. Its separation makes autonomous exploration auditable independently of the primary transcript.
 
-### Amadeus integration and offer model (`amadeus_api.py`, `flight_model.py`)
+### Amadeus integration and offer model (`travel_llm_agent/integrations/amadeus_api.py`, `travel_llm_agent/domain/flight_model.py`)
 
 `AmadeusClient` owns OAuth token acquisition/caching, authenticated HTTP, retry policy, daily offer search, multi-day aggregation, repricing, airport lookup and nearest-airport lookup. It accepts a pre-obtained bearer token or client credentials from environment variables. Its shared `requests.Session` reuses connections. Calls use a configurable 20-second timeout by default and up to three retries with exponential delay for rate limits, server errors and transport failures.
 
 `FlightOfferModel`, `SegmentModel` and `FareModel` provide the normalized application contract. Normalization extracts flight number, endpoints, schedule, duration, stop count, directness, fare amounts and raw provider payload. Ranking computes price, duration and stop metrics and emits grouped direct/transfer results. This layer owns provider-specific JSON interpretation; agents consume stable application models.
 
-### Legacy flight and taxi capabilities (`tools_flight.py`, `tools_taxi.py`, `flight_assistant_chain.py`, `taxi_assistant_chain.py`, `graph_flight.py`, `graph_taxi.py`)
+### Legacy flight and taxi capabilities (`travel_llm_agent/agents/booked_flights/`, `travel_llm_agent/agents/taxi/`)
 
 These modules define reusable trip-management operations: passenger itineraries, local flight lookup, ticket rescheduling/cancellation, and taxi request create/read/update/delete. Sensitive mutations verify the configured passenger owns the target record, and graph handlers can interrupt before privileged tools. Although their graph registration is not enabled in the default supervisor build, they form an extension boundary for a broader trip assistant and document the intended safe-versus-sensitive tool pattern.
 
-### Demonstration and alternate orchestration (`demo-supervisor.py`, `graph_1.py`, `assistant_chain_1.py`, `main_1.py`, `custom_tool_node.py`)
+### Demonstration and alternate orchestration (`examples/`, `travel_llm_agent/legacy/`, `travel_llm_agent/shared/custom_tool_node.py`)
 
 These modules provide experiments for supervisor/worker delegation, alternate assistant composition, fake-model execution and custom tool-node semantics. `custom_tool_node` demonstrates explicit tool lookup, invocation, `Command` propagation and correlation of tool results. They are development entry points rather than the default runtime and should remain isolated from production graph imports.
 

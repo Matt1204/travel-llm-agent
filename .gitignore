@@ -53,3 +53,4 @@ pytest_cache/
 customer-serice-example.md
 
 *.txt
+!requirements.txt
